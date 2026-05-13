@@ -32,10 +32,9 @@ flowchart TD
     PP["Plugin Pipeline\nFilter → Score → Pick"]
     NS["NotificationSource\nchan Event  (buffered)"]
     TL["tick loop\nevery 100ms"]
-    ExtA["ConcurrencyExtractor"]
+    ExtA["RunningRequestsExtractor"]
     ExtB["LatencyExtractor\n(future)"]
-    DS1[("DataStore\nrunning-requests")]
-    DS2[("DataStore\npool-latency")]
+    DS[("Datastore\npkg/datastore")]
     MS["Model Selector"]
 
     P -->|"Notify(event)  ~ns"| NS
@@ -43,10 +42,9 @@ flowchart TD
     NS --> TL
     TL -->|"[]Event batch"| ExtA
     TL -->|"[]Event batch"| ExtB
-    ExtA --> DS1
-    ExtB --> DS2
-    DS1 --> MS
-    DS2 --> MS
+    ExtA --> DS
+    ExtB --> DS
+    DS --> MS
     PP -->|reads| MS
 ```
 
@@ -62,6 +60,7 @@ Each extractor switches on `Event.Type` and handles what it understands, ignorin
 type DataSource interface {
     Plugin                            // TypedName() TypedName
     Start(ctx context.Context) error
+    // Stop signals the component to shut down and blocks until it has fully stopped.
     Stop()
 }
 
@@ -72,17 +71,24 @@ type Event struct {
     Payload any
 }
 
+// EventNotifier is the narrow interface the producer uses to fire events.
+// Keeping it separate lets the server depend only on Notify, not on lifecycle
+// or extractor registration.
+type EventNotifier interface {
+    Notify(e Event)
+}
+
 // NotificationSource buffers events off the hot path and dispatches
 // batches to registered Extractors on each tick.
 type NotificationSource interface {
     DataSource
-    Notify(e Event)                // non-blocking, called by the producer
+    EventNotifier
     RegisterExtractor(e Extractor)
 }
 
-// Extractor switches on Event.Type and handles only the types it understands.
+// Extractor processes a batch of Events. It does not manage its own goroutines.
 type Extractor interface {
-    DataSource
+    Plugin
     Extract(ctx context.Context, events []Event) error
 }
 ```
@@ -108,9 +114,9 @@ if err := src.Start(ctx); err != nil { ... }
 
 ## Implementation Steps
 
-1. Add `DataSource`, `Event`, `NotificationSource`, `Extractor`, payload types to `pkg/framework`
-2. Implement `NotificationSource` (buffered channel + tick loop) in `pkg/plugins/datalayer/`
-3. Implement `ConcurrencyExtractor`
+1. Add `DataSource`, `DataStore`, `EventNotifier`, `Event`, `NotificationSource`, `Extractor`, payload types to `pkg/framework`
+2. Implement `NotificationSource` (buffered channel + tick loop) in `pkg/datalayer/`
+3. Implement `RunningRequestsExtractor` in `pkg/plugins/datalayer/`
 4. Add `src.Notify(...)` calls to the producer alongside existing pipeline dispatch
 5. Wire in `runner.go`
 
@@ -123,14 +129,12 @@ if err := src.Start(ctx); err != nil { ... }
 ```go
 // RequestPayload is the Payload for RequestEventType.
 // Carries the already-parsed request — no re-parsing needed.
-// StartTime is the only field the producer adds.
 type RequestPayload struct {
-    Request   *InferenceRequest
-    StartTime time.Time
+    Request *InferenceRequest
 }
 
 // ResponsePayload is the Payload for ResponseEventType.
-// Duration is computed by the producer (time.Since(StartTime)).
+// Duration is computed by the producer and passed directly.
 // All response body fields are accessible via Response.Body.
 type ResponsePayload struct {
     Request  *InferenceRequest
@@ -141,12 +145,12 @@ type ResponsePayload struct {
 
 ### Extractor definitions
 
-#### `ConcurrencyExtractor` — owns `"running-requests"`
+#### `RunningRequestsExtractor` — owns `"running-requests"`
 
 | | |
 |---|---|
 | Handles | `RequestEventType` (increment), `ResponseEventType` (decrement) |
-| Reads | `model`, `max_tokens` from `RequestPayload.Request.Body` |
+| Reads | `model`, `max_tokens` from `Request.Body` |
 | State | `map[model]*atomic.Int64` — in-flight counters per model |
 | Writes | `RunningRequestsCount{Requests int64, Tokens int64}` per model |
 
