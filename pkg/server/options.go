@@ -1,5 +1,5 @@
 /*
-Copyright 2025 The Kubernetes Authors.
+Copyright 2026 The llm-d Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -30,19 +30,18 @@ const (
 	DefaultGrpcHealthPort = 9005
 )
 
-// Options contains the command-line configuration for the BBR server.
+// Options contains the command-line configuration for the IPP server.
 type Options struct {
 	//
 	// ext_proc configuration.
 	//
-	GRPCPort  int  // gRPC port for communicating with Envoy proxy.
-	Streaming bool // Enables streaming support for Envoy full-duplex streaming mode.
+	GRPCPort int // gRPC port for communicating with Envoy proxy.
 	//
 	// Diagnostics.
 	//
 	logging.LoggingOptions      // Logging configuration.
 	Tracing                bool // Enable emitting traces
-	MetricsPort            int  // The metrics port exposed by BBR.
+	MetricsPort            int  // The metrics port exposed by IPP.
 	GRPCHealthPort         int  // The port for gRPC liveness and readiness probes.
 	EnablePprof            bool // Enables pprof handlers.
 	SecureServing          bool // Enables secure serving.
@@ -50,7 +49,7 @@ type Options struct {
 	//
 	// Plugins.
 	//
-	PluginSpecs config.BBRPluginSpecs // Repeatable --plugin <type>:<name>[:<json>] flag values.
+	PluginSpecs config.IPPPluginSpecs // Repeatable --plugin <type>:<name>[:<json>] flag values.
 
 	// internal
 	fs *pflag.FlagSet // FlagSet used in AddFlags()
@@ -83,12 +82,10 @@ func (opts *Options) AddFlags(fs *pflag.FlagSet) {
 	fs.IntVar(&opts.GRPCHealthPort, "grpc-health-port", opts.GRPCHealthPort,
 		"The port used for gRPC liveness and readiness probes.")
 	fs.IntVar(&opts.MetricsPort, "metrics-port", opts.MetricsPort,
-		"The metrics port exposed by BBR.")
+		"The metrics port exposed by IPP.")
 	fs.BoolVar(&opts.Tracing, "tracing", opts.Tracing, "Enables emitting traces.")
 	fs.BoolVar(&opts.MetricsEndpointAuth, "metrics-endpoint-auth", opts.MetricsEndpointAuth,
 		"Enables authentication and authorization of the metrics endpoint.")
-	fs.BoolVar(&opts.Streaming, "streaming", opts.Streaming,
-		"Enables streaming support for Envoy full-duplex streaming mode.")
 	fs.BoolVar(&opts.SecureServing, "secure-serving", opts.SecureServing,
 		"Enables secure serving.")
 	fs.BoolVar(&opts.EnablePprof, "enable-pprof", opts.EnablePprof,

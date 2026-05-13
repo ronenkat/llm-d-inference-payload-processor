@@ -1,5 +1,5 @@
 /*
-Copyright 2025 The Kubernetes Authors.
+Copyright 2026 The llm-d Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -37,18 +37,15 @@ import (
 type ExtProcServerRunner struct {
 	GrpcPort        int
 	SecureServing   bool
-	Streaming       bool
 	RequestPlugins  []framework.RequestProcessor
 	ResponsePlugins []framework.ResponseProcessor
 }
 
-func NewDefaultExtProcServerRunner(port int, streaming bool) *ExtProcServerRunner {
+func NewDefaultExtProcServerRunner(port int) *ExtProcServerRunner {
 	return &ExtProcServerRunner{
 		GrpcPort:      port,
 		SecureServing: true,
-		Streaming:     streaming,
 	}
-	// Dependencies can be assigned later.
 }
 
 // AsRunnable returns a Runnable that can be used to start the ext-proc gRPC server.
@@ -70,7 +67,7 @@ func (r *ExtProcServerRunner) AsRunnable(logger logr.Logger) manager.Runnable {
 			srv = grpc.NewServer()
 		}
 
-		extProcPb.RegisterExternalProcessorServer(srv, handlers.NewServer(r.Streaming, r.RequestPlugins, r.ResponsePlugins))
+		extProcPb.RegisterExternalProcessorServer(srv, handlers.NewServer(r.RequestPlugins, r.ResponsePlugins))
 
 		// Forward to the gRPC runnable.
 		return runnable.GRPCServer("ext-proc", srv, r.GrpcPort).Start(ctx)
