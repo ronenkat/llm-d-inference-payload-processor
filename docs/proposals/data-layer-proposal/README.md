@@ -1,4 +1,4 @@
-﻿# Proposal: Data Layer
+# Proposal: Data Layer
 
 ## Summary
 
@@ -31,17 +31,17 @@ flowchart TD
     P["Producer\n(server.go)"]
     PP["Plugin Pipeline\nFilter → Score → Pick"]
     NS["NotificationSource\nchan Event  (buffered)"]
-    TL["tick loop\nevery 100ms"]
-    ExtA["RunningRequestsExtractor"]
+    EL["event loop"]
+    ExtA["InflightRequestsExtractor"]
     ExtB["LatencyExtractor\n(future)"]
     DS[("Datastore\npkg/datastore")]
-    MS["Model Selector"]
+    MS["Model Selector\n(InflightRequestsScorer)"]
 
     P -->|"Notify(event)  ~ns"| NS
     P --> PP
-    NS --> TL
-    TL -->|"[]Event batch"| ExtA
-    TL -->|"[]Event batch"| ExtB
+    NS --> EL
+    EL -->|"one event at a time"| ExtA
+    EL -->|"one event at a time"| ExtB
     ExtA --> DS
     ExtB --> DS
     DS --> MS
@@ -50,8 +50,9 @@ flowchart TD
 
 The **producer** (currently `server.go`) fires an `Event` on each request and response —
 a non-blocking channel write (~ns). The `NotificationSource` buffers it. A background
-tick loop drains the buffer every 100ms and fans the batch to all registered `Extractor`s.
-Each extractor switches on `Event.Type` and handles what it understands, ignoring the rest.
+event loop reads each event from the channel as it arrives and fans it out to all registered
+`Extractor`s. Each extractor switches on `Event.Type` and handles what it understands,
+ignoring the rest.
 
 
 ### Types (`pkg/framework`)
@@ -79,10 +80,12 @@ type EventNotifier interface {
 }
 
 // NotificationSource buffers events off the hot path and dispatches
-// batches to registered Extractors on each tick.
+// each event to registered Extractors as it arrives.
 type NotificationSource interface {
     DataSource
     EventNotifier
+    // RegisterExtractor adds an extractor after construction.
+    // Extractors known at construction time can be passed to NewNotificationSource directly.
     RegisterExtractor(e Extractor)
 }
 
@@ -95,30 +98,45 @@ type Extractor interface {
 
 See [Appendix](#appendix) for payload struct definitions and a full extractor example.
 
+### DataStore injection
+
+The `DataStore` is passed directly to each extractor's constructor. This keeps the
+`NotificationSource` a pure event dispatcher with no knowledge of storage, and avoids
+routing the store through `framework.Handle`.
+
+```go
+ds := datastore.NewStore()
+extractor := inflightrequests.NewInflightRequestsExtractor(ds)
+```
+
 ### Registration (`runner.go`)
 
 ```go
-src := datalayer.NewNotificationSource("notification-source")
-src.RegisterExtractor(datalayer.NewConcurrencyExtractor(handle))
+ds := datastore.NewStore()
+src, err := datalayer.NewNotificationSource("default", inflightrequests.NewInflightRequestsExtractor(ds))
+if err != nil { ... }
 if err := src.Start(ctx); err != nil { ... }
-// pass src to the producer so it can call src.Notify(...)
+// TODO: pass src to the producer so it can call src.Notify(...)
 ```
 
-**Next:** move extractors registration to a config struct or CLI flags so operators can enable/disable metrics without recompiling.
+**Next:** define a configuration story for data layer plugins (NotificationSource, extractors)
+consistent with how model-selector plugins are configured via CLI flags.
 
 
 ## Future
 
-- **LatencyExtractor** - handles `ResponseEventType`; per-model avg latency; owns `"pool-latency"` topic
+- **LatencyExtractor** - handles `ResponseEventType`; per-model avg latency; owns `"pool-latency"` attribute
 - **PollingDataSource** - polls inference pool `/metrics` on a ticker; same `Extractor` interface
 
 ## Implementation Steps
 
 1. Add `DataSource`, `DataStore`, `EventNotifier`, `Event`, `NotificationSource`, `Extractor`, payload types to `pkg/framework`
-2. Implement `NotificationSource` (buffered channel + tick loop) in `pkg/datalayer/`
-3. Implement `RunningRequestsExtractor` in `pkg/plugins/datalayer/`
-4. Add `src.Notify(...)` calls to the producer alongside existing pipeline dispatch
-5. Wire in `runner.go`
+2. Implement `NotificationSource` (buffered channel + event loop) in `pkg/datalayer/`
+3. Implement `InflightRequestsExtractor` in `pkg/plugins/datalayer/inflightrequests/`
+4. Implement `InflightRequestsScorer` in `pkg/framework/modelselector/scorer/inflightrequests/`
+5. Wire DataStore + extractor + NotificationSource in `runner.go`
+6. Add `src.Notify(...)` calls to the producer alongside existing pipeline dispatch
+7. Config-driven registration of data layer plugins
 
 ---
 
@@ -145,17 +163,17 @@ type ResponsePayload struct {
 
 ### Extractor definitions
 
-#### `RunningRequestsExtractor` — owns `"running-requests"`
+#### `InflightRequestsExtractor` — owns `"inflight-requests"` (`pkg/plugins/datalayer/inflightrequests`)
 
 | | |
 |---|---|
 | Handles | `RequestEventType` (increment), `ResponseEventType` (decrement) |
 | Reads | `model`, `max_tokens` from `Request.Body` |
-| State | `map[model]*atomic.Int64` — in-flight counters per model |
-| Writes | `RunningRequestsCount{Requests int64, Tokens int64}` per model |
+| State | `map[string]InflightRequestsCount` — in-flight counters per model |
+| Writes | `InflightRequestsCount{Requests int64, Tokens int64}` per model |
 
 ```go
-type RunningRequestsCount struct {
+type InflightRequestsCount struct {
     Requests int64
     Tokens   int64 // sum of max_tokens across in-flight requests
 }
