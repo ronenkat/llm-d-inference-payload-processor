@@ -21,7 +21,6 @@ where to route each request.
 - **Extensible** - adding a new metric or event type must not require changes to existing extractors or the producer.
 - **Off the plugin pipeline** - the data layer is a background concern; it must not participate in the per-request plugin chain.
 
-
 ## Proposal
 
 ### Architecture
@@ -53,7 +52,6 @@ a non-blocking channel write (~ns). The `NotificationSource` buffers it. A backg
 event loop reads each event from the channel as it arrives and fans it out to all registered
 `Extractor`s. Each extractor switches on `Event.Type` and handles what it understands,
 ignoring the rest.
-
 
 ### Types (`pkg/framework`)
 
@@ -121,7 +119,6 @@ if err := src.Start(ctx); err != nil { ... }
 
 **Next:** define a configuration story for data layer plugins (NotificationSource, extractors)
 consistent with how model-selector plugins are configured via CLI flags.
-
 
 ## Future
 
