@@ -2,44 +2,43 @@
 
 ## Summary
 
-The Prefix Hash-Index-Score system enables intelligent request routing to models that have previously processed similar request prefixes, thereby improving Time-To-First-Token (TTFT) by leveraging prefix caching capabilities in modern LLM inference engines. The system operates in three phases within the Inference Payload Processor (IPP): a pre-processing plugin computes prefix hashes and queries an indexer to identify models with matching cached prefixes; a scoring plugin assigns higher scores to models with longer prefix matches; and a response extraction plugin updates the indexer with information about which models have processed which prefixes.
+The Prefix Hash-Index-Score system enables intelligent request routing to models that have previously processed similar request prefixes, thereby improving Time-To-First-Token (TTFT) by leveraging prefix caching capabilities in modern LLM inference engines. A prefix-aware scorer operates in three phases within the Inference Payload Processor (IPP): a pre-processing plugin computes prefix hashes and queries an indexer to identify models with matching cached prefixes; a scoring plugin assigns higher scores to models with longer prefix matched; and a response extraction plugin updates the indexer with information about which models have processed which prefixes.
 
 ## Proposed Architecture
 
 The Prefix Hash-Index-Score system consists of three main components that operate at different stages of the request processing pipeline within the IPP:
 
 1. **PrefixHashing Plugin** (Pre-processing, RequestProcessor)
-   - **Type**: [`framework.RequestProcessor`](pkg/framework/plugin.go)
+   - **Type**: `framework.RequestProcessor`
    - **Role**: Executes during the pre-processing phase before model selection
    - **Responsibilities**:
-     - Computes prefix hashes for incoming requests by dividing the prompt into fixed-size blocks
+     - Computes prefix hashes for incoming requests by dividing the prompt into fixed-size character blocks
      - Queries the prefix indexer to identify models that have previously processed matching prefixes
-     - Stores the computed hashes and model match information in the [`CycleState`](pkg/framework/cycle_state.go) for use by the scorer
+     - Stores the computed hashes and model match information in the `CycleState` for use by the scorer
      - Implements a greedy longest-prefix matching strategy to find the best cache matches
 
 2. **RequestPrefixScorer** (Scoring, Scorer)
-   - **Type**: [`modelselector.Scorer`](pkg/framework/modelselector/scorer.go)
+   - **Type**: `modelselector.Scorer`
    - **Role**: Executes during the model selection scoring phase
    - **Responsibilities**:
-     - Retrieves prefix hash state from [`CycleState`](pkg/framework/cycle_state.go) (stored by PrefixHashing plugin)
+     - Retrieves prefix hash state from `CycleState` (stored by PrefixHashing plugin)
      - Scores each candidate model based on its prefix cache match ratio
      - Calculates score as: `matchedBlocks / totalBlocks` (range: 0.0 to 1.0)
      - Models with longer prefix matches receive higher scores, influencing routing decisions
 
 3. **PrefixIndexingExtractor** (Post-processing, Extractor)
-   - **Type**: [`framework.Extractor`](pkg/framework/plugin.go)
+   - **Type**: `framework.Extractor`
    - **Role**: Executes during the response extraction phase after request completion, running out of the response hot-path as a data layer event processing component
    - **Responsibilities**:
-     - Processes [`ResponseEventType`](pkg/framework/event.go) events to track completed requests
-     - Computes prefix hashes from the original request
+     - Processes `ResponseEventType` events to track completed requests
      - Updates the prefix indexer with information about which model processed which prefix hashes
-     - Maintains the indexer's knowledge of prefix-to-model mappings over time
+     - Maintains the indexer's knowledge of prefix-to-model mappings over time, leveraging LRU and TTL eviction policies.
 
 ### Request Body Hashing and Indexing
 
 The hash function implementation uses the xxHash algorithm for fast, high-quality hashing.
 
-1. **Block-based Hashing**: The request prompt is divided into fixed-size text blocks. Each block is hashed independently, creating a sequence of [`BlockHash`](pkg/plugins/prefixhashing/types.go) values.
+1. **Block-based Hashing**: The request prompt is divided into fixed-size text blocks. Each block is hashed independently, creating a sequence of `BlockHash` values.
 
 2. **Chained Hashing**: To ensure that identical prefixes in different positions produce different hashes, each block hash incorporates the previous block's hash:
    ```
@@ -47,12 +46,7 @@ The hash function implementation uses the xxHash algorithm for fast, high-qualit
    ```
    This creates a dependency chain where changing any block affects all subsequent hashes.
 
-3. **Model-specific Salting**: The first block hash includes the target model name and an optional cache salt from the request body. This ensures that different models maintain separate cache namespaces even for identical prompts:
-   ```
-   hash(block[0]) = xxhash(model_name + cache_salt + block[0].content)
-   ```
-
-4. **Configurable Parameters**:
+3. **Configurable Parameters**:
    - `HashBlockSize`: Size of each text block (default: 64)
    - `MaxPrefixBlocksToMatch`: Maximum number of blocks to hash (default: 1024)
 
@@ -67,26 +61,26 @@ The hash function implementation uses the xxHash algorithm for fast, high-qualit
 The indexer provides an efficient bidirectional mapping between prefix hashes and models:
 
 1. **Hash-to-Models Mapping** (`hashToModels map[BlockHash]modelSet`):
-   - Maps each [`BlockHash`](pkg/plugins/prefixhashing/types.go:36) to a set of models that have that hash cached
+   - Maps each `BlockHash` to a set of models that have that hash cached
    - Enables fast lookup: "Which models have this prefix hash cached?"
 
 2. **Model-to-LRU Mapping** (`modelToLRU map[ModelID]*lru.Cache[BlockHash, struct{}]`):
-   - Each model has its own LRU cache tracking which hashes it has processed
+   - Each model has its own LRU and TTL cache tracking which hashes it has processed
    - Default capacity: 256,144 entries per model (configurable)
    - Automatically evicts oldest hashes when capacity is reached
    - Approximates the actual prefix cache state on model inference servers
 
-**Eviction and Cleanup**: The indexer uses per-model LRU caches with custom eviction callbacks that automatically remove models from the hash-to-models mapping when hashes are evicted. A background cleanup goroutine runs every 2 minutes to remove entries for inactive models, preventing memory leaks. All operations are thread-safe using `sync.RWMutex` with read locks for queries and write locks for updates.
+**Eviction and Cleanup**: The indexer uses per-model LRU and TTL caches with custom eviction callbacks that automatically remove models from the hash-to-models mapping when hashes are evicted. A background cleanup goroutine runs every 2 minutes to remove entries for inactive models, preventing memory leaks. All operations are thread-safe using `sync.RWMutex` with read locks for queries and write locks for updates.
 
-**Capacity Sizing**: The initial LRU version uses a default LRU capacity (e.g., 131,072 entries) to be revised for in future versions.
+**Capacity Sizing**: The initial LRU version uses a default LRU capacity to be revised for in future versions.
 
-### 4.3 Datastore Updates
+### Datastore Updates
 
 The prefix indexer is integrated into the datastore to provide centralized access across all IPP components.
 
 **Interface Extension:**
 
-The [`PrefixIndexer`](pkg/datastore/datastore.go:25) interface is added to avoid import cycles:
+The `PrefixIndexer` interface is added to avoid import cycles:
 
 ```go
 type PrefixIndexer interface {
@@ -94,7 +88,7 @@ type PrefixIndexer interface {
 }
 ```
 
-The [`Datastore`](pkg/datastore/datastore.go:32) interface is extended:
+The `Datastore` interface is extended:
 
 ```go
 type Datastore interface {
@@ -102,13 +96,13 @@ type Datastore interface {
     DeleteModel(name string)
     Models() []string
     GetPrefixIndexer() PrefixIndexer  // New method
-	SetPrefixIndexer(indexer PrefixIndexer) PrefixIndexer // New method
+	 SetPrefixIndexer(indexer PrefixIndexer) PrefixIndexer // New method
 }
 ```
 
 **Data Structure:**
 
-The concrete [`store`](pkg/datastore/datastore.go:52) struct is extended:
+The concrete `store` struct is extended:
 
 ```go
 type store struct {
@@ -132,9 +126,9 @@ All three components access the indexer through `datastore.Store.GetPrefixIndexe
 
 **Requirement**: The pre-processing plugin needs access to the datastore instance to query the prefix indexer.
 
-**Approach 1**: The plugin factory uses the global [`datastore.Store`](pkg/datastore/datastore.go:40) variable directly. While this works, it couples the plugin to global state and makes testing more difficult.
+**Approach 1**: The plugin factory uses the global `datastore.Store` variable directly. While this works, it couples the plugin to global state and makes testing more difficult.
 
-**Approach 2**: Extend the [`framework.Handle`](pkg/framework/plugin.go) interface to provide datastore access:
+**Approach 2**: Extend the `framework.Handle` interface to provide datastore access:
 ```go
 type Handle interface {
     Context() context.Context
@@ -148,7 +142,7 @@ This would provide explicit dependency injection, easier testing, and eliminate 
 
 **Question**: Should the computed hashes and model match information be stored in cycle state? If not, how should the pre-processing plugin pass this information to the scorer?
 
-**Suggested Implementation**: The PrefixHashing plugin stores a [`RequestHashingState`](pkg/plugins/prefixhashing/types.go:55) in the [`CycleState`](pkg/framework/cycle_state.go) containing:
+**Suggested Implementation**: The PrefixHashing plugin stores a `RequestHashingState` in the `CycleState` containing:
 - `PrefixHashes []BlockHash`: The computed prefix hashes
 - `PrefixCacheModels map[ModelID]int`: Models and their longest prefix match length
 
