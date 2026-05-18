@@ -8,8 +8,6 @@ The Prefix Hash-Index-Score system enables intelligent request routing to models
 
 The Prefix Hash-Index-Score system consists of three main components that operate at different stages of the request processing pipeline within the IPP:
 
-### Component Overview
-
 1. **PrefixHashing Plugin** (Pre-processing, RequestProcessor)
    - **Type**: [`framework.RequestProcessor`](pkg/framework/plugin.go)
    - **Role**: Executes during the pre-processing phase before model selection
@@ -37,13 +35,11 @@ The Prefix Hash-Index-Score system consists of three main components that operat
      - Updates the prefix indexer with information about which model processed which prefix hashes
      - Maintains the indexer's knowledge of prefix-to-model mappings over time
 
-### 4.1 Request Body Hashing and Indexing
+### Request Body Hashing and Indexing
 
 The hash function implementation uses the xxHash algorithm for fast, high-quality hashing.
 
-**Key Design Decisions:**
-
-1. **Block-based Hashing**: The request prompt is divided into fixed-size blocks (default: 16 tokens ≈ 64 characters). Each block is hashed independently, creating a sequence of [`BlockHash`](pkg/plugins/prefixhashing/types.go) values.
+1. **Block-based Hashing**: The request prompt is divided into fixed-size text blocks (default: 1 text blocks ≈ 16 characters). Each block is hashed independently, creating a sequence of [`BlockHash`](pkg/plugins/prefixhashing/types.go) values.
 
 2. **Chained Hashing**: To ensure that identical prefixes in different positions produce different hashes, each block hash incorporates the previous block's hash:
    ```
@@ -57,9 +53,8 @@ The hash function implementation uses the xxHash algorithm for fast, high-qualit
    ```
 
 4. **Configurable Parameters**:
-   - `BlockSizeTokens`: Size of each block in tokens (default: 16)
-   - `MaxPrefixBlocksToMatch`: Maximum number of blocks to hash (default: 256)
-   - `MaxPrefixTokensToMatch`: Alternative limit specified in tokens (overrides MaxPrefixBlocksToMatch)
+   - `HashBlockSize`: Size of each text block (default: 16)
+   - `MaxPrefixBlocksToMatch`: Maximum number of blocks to hash (default: 1024)
 
 **Hash Function Properties:**
 - Fast computation using xxHash (optimized for speed)
@@ -67,7 +62,7 @@ The hash function implementation uses the xxHash algorithm for fast, high-qualit
 - Collision-resistant: different inputs produce different hashes with high probability
 - Order-preserving: prefix relationship is maintained in hash sequences
 
-### 4.2 Indexing Mechanism
+### Indexing Mechanism
 
 The indexer provides an efficient bidirectional mapping between prefix hashes and models:
 
@@ -77,13 +72,13 @@ The indexer provides an efficient bidirectional mapping between prefix hashes an
 
 2. **Model-to-LRU Mapping** (`modelToLRU map[ModelID]*lru.Cache[BlockHash, struct{}]`):
    - Each model has its own LRU cache tracking which hashes it has processed
-   - Default capacity: 131,072 entries per model (configurable)
+   - Default capacity: 256,144 entries per model (configurable)
    - Automatically evicts oldest hashes when capacity is reached
    - Approximates the actual prefix cache state on model inference servers
 
 **Eviction and Cleanup**: The indexer uses per-model LRU caches with custom eviction callbacks that automatically remove models from the hash-to-models mapping when hashes are evicted. A background cleanup goroutine runs every 2 minutes to remove entries for inactive models, preventing memory leaks. All operations are thread-safe using `sync.RWMutex` with read locks for queries and write locks for updates.
 
-**Capacity Sizing**: The default LRU capacity (131,072 entries) is sized to accommodate approximately 4 GPUs per model, based on typical H100 80GB GPU memory allocation for prefix caching (64GB cache space ÷ 128KB per token ÷ 16 tokens per block ≈ 31K blocks per GPU).
+**Capacity Sizing**: The initial LRU version uses a default LRU capacity (e.g., 131,072 entries) to be revised for in future versions.
 
 ### 4.3 Datastore Updates
 
@@ -129,7 +124,7 @@ The store is created with `prefixIndexer: nil` and initialized lazily when the P
 
 **Access Pattern:**
 
-All three components access the indexer through `datastore.Store.GetPrefixIndexer()`, with nil checks to gracefully handle cases where the indexer is not yet initialized.
+All three components access the indexer through `datastore.Store.GetPrefixIndexer()`, with nil checks to gracefully handle cases where the indexer is not yet initialized. 
 
 ## Open Questions
 
@@ -153,7 +148,7 @@ This would provide explicit dependency injection, easier testing, and eliminate 
 
 **Question**: Should the computed hashes and model match information be stored in cycle state? If not, how should the pre-processing plugin pass this information to the scorer?
 
-**Current Implementation**: The PrefixHashing plugin stores a [`RequestHashingState`](pkg/plugins/prefixhashing/types.go:55) in the [`CycleState`](pkg/framework/cycle_state.go) containing:
+**Suggested Implementation**: The PrefixHashing plugin stores a [`RequestHashingState`](pkg/plugins/prefixhashing/types.go:55) in the [`CycleState`](pkg/framework/cycle_state.go) containing:
 - `PrefixHashes []BlockHash`: The computed prefix hashes
 - `PrefixCacheModels map[ModelID]int`: Models and their longest prefix match length
 
@@ -161,7 +156,4 @@ The RequestPrefixScorer retrieves this state from CycleState to calculate scores
 
 **Considerations**:
 - **Pros**: CycleState is designed for passing data between pipeline stages; thread-safe; scoped to request lifecycle
-- **Cons**: Adds memory overhead per request; state must be serialized if CycleState is persisted
 - **Alternatives**: Direct indexer queries in scorer (slower, redundant computation), shared cache (complex lifecycle management)
-
-**Recommendation**: The current CycleState approach is appropriate as it follows the framework's design patterns and provides clean separation between hashing and scoring concerns.
