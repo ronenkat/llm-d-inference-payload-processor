@@ -22,6 +22,7 @@ import (
 
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework"
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/datalayer"
+	dlsrc "github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/datalayer/datasource"
 )
 
 const (
@@ -33,7 +34,7 @@ const (
 )
 
 // compile-time interface assertion
-var _ datalayer.Extractor = &InflightRequestsExtractor{}
+var _ dlsrc.Extractor = &InflightRequestsExtractor{}
 
 // ExtractorFactory creates a InflightRequestsExtractor with a nil DataStore.
 // The factory path is limited: the DataStore is not available via framework.Handle,
@@ -82,13 +83,13 @@ func (e *InflightRequestsExtractor) WithName(name string) *InflightRequestsExtra
 	return e
 }
 
-func (e *InflightRequestsExtractor) Extract(_ context.Context, events []datalayer.Event) error {
+func (e *InflightRequestsExtractor) Extract(_ context.Context, events []dlsrc.Event) error {
 	updated := map[string]InflightRequestsCount{}
 
 	for _, ev := range events {
 		switch ev.Type {
-		case datalayer.RequestEventType:
-			p, ok := ev.Payload.(datalayer.RequestPayload)
+		case dlsrc.RequestEventType:
+			p, ok := ev.Payload.(dlsrc.RequestPayload)
 			if !ok {
 				continue
 			}
@@ -103,8 +104,8 @@ func (e *InflightRequestsExtractor) Extract(_ context.Context, events []datalaye
 			e.counters[model] = c
 			updated[model] = c
 
-		case datalayer.ResponseEventType:
-			p, ok := ev.Payload.(datalayer.ResponsePayload)
+		case dlsrc.ResponseEventType:
+			p, ok := ev.Payload.(dlsrc.ResponsePayload)
 			if !ok {
 				continue
 			}

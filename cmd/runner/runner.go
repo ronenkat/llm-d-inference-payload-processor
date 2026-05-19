@@ -175,8 +175,6 @@ func (r *Runner) Run(ctx context.Context) error {
 	ds := inmemory.NewDatastore()
 	handle := framework.NewHandle(ctx, mgr, ds)
 
-	ds := datastore.NewStore()
-
 	// Register factories for all known in-tree plugins
 	r.registerInTreePlugins()
 
