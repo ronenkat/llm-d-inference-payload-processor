@@ -18,35 +18,14 @@ package inflightrequests
 
 import (
 	"context"
-	"sync"
 	"testing"
 	"time"
 
+	"github.com/llm-d/llm-d-inference-payload-processor/pkg/datastore"
+	"github.com/llm-d/llm-d-inference-payload-processor/pkg/datastore/inmemory"
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework"
-	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/datalayer"
 	dlsrc "github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/datalayer/datasource"
 )
-
-// fakeDataStore is an in-memory DataStore for tests.
-type fakeDataStore struct {
-	mu     sync.Mutex
-	models map[string]datalayer.Model
-}
-
-func newFakeDataStore() *fakeDataStore {
-	return &fakeDataStore{models: make(map[string]datalayer.Model)}
-}
-
-func (f *fakeDataStore) GetOrCreateModel(name string) datalayer.Model {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if m, ok := f.models[name]; ok {
-		return m
-	}
-	m := datalayer.NewModel(name)
-	f.models[name] = m
-	return m
-}
 
 // makeRequestEvent creates a RequestEventType event with model and max_tokens.
 func makeRequestEvent(model string, maxTokens float64) dlsrc.Event {
@@ -76,7 +55,7 @@ func makeResponseEvent(model string, durationMs int, maxTokens float64) dlsrc.Ev
 }
 
 // getInflightRequests asserts the inflight-requests attribute exists for model and returns it.
-func getInflightRequests(t testing.TB, ds *fakeDataStore, model string) InflightRequestsCount {
+func getInflightRequests(t testing.TB, ds datastore.Datastore, model string) InflightRequestsCount {
 	t.Helper()
 	val, ok := ds.GetOrCreateModel(model).GetAttributes().Get(InflightRequestsAttributeKey)
 	if !ok {
@@ -89,9 +68,9 @@ func getInflightRequests(t testing.TB, ds *fakeDataStore, model string) Inflight
 	return rc
 }
 
-func newInflightRequestsTest(t *testing.T) (*InflightRequestsExtractor, *fakeDataStore) {
+func newInflightRequestsTest(t *testing.T) (*InflightRequestsExtractor, datastore.Datastore) {
 	t.Helper()
-	ds := newFakeDataStore()
+	ds := inmemory.NewDatastore()
 	return NewInflightRequestsExtractor(ds), ds
 }
 
@@ -181,9 +160,7 @@ func TestInflightRequestsUnknownEventTypeIgnored(t *testing.T) {
 		t.Fatalf("Extract failed: %v", err)
 	}
 
-	ds.mu.Lock()
-	modelCount := len(ds.models)
-	ds.mu.Unlock()
+	modelCount := len(ds.Models())
 	if modelCount != 0 {
 		t.Errorf("expected no models in datastore, got %d", modelCount)
 	}
@@ -202,9 +179,7 @@ func TestInflightRequestsMissingModelFieldIgnored(t *testing.T) {
 		t.Fatalf("Extract failed: %v", err)
 	}
 
-	ds.mu.Lock()
-	modelCount := len(ds.models)
-	ds.mu.Unlock()
+	modelCount := len(ds.Models())
 	if modelCount != 0 {
 		t.Errorf("expected no models in datastore, got %d", modelCount)
 	}

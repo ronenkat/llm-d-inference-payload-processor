@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/llm-d/llm-d-inference-payload-processor/pkg/datastore"
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework"
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/datalayer"
 	dlsrc "github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/datalayer/datasource"
@@ -63,14 +64,14 @@ func (r InflightRequestsCount) Clone() datalayer.Cloneable { return r }
 // synthetic ResponseEventType in its error/EOF path to keep counts accurate.
 type InflightRequestsExtractor struct {
 	typedName framework.TypedName
-	dataStore datalayer.DataStore
+	ds        datastore.Datastore
 	counters  map[string]InflightRequestsCount
 }
 
-func NewInflightRequestsExtractor(ds datalayer.DataStore) *InflightRequestsExtractor {
+func NewInflightRequestsExtractor(ds datastore.Datastore) *InflightRequestsExtractor {
 	return &InflightRequestsExtractor{
 		typedName: framework.TypedName{Type: PluginType, Name: PluginType},
-		dataStore: ds,
+		ds:        ds,
 		counters:  make(map[string]InflightRequestsCount),
 	}
 }
@@ -123,7 +124,7 @@ func (e *InflightRequestsExtractor) Extract(_ context.Context, events []dlsrc.Ev
 	}
 
 	for model, c := range updated {
-		e.dataStore.GetOrCreateModel(model).GetAttributes().Put(InflightRequestsAttributeKey, c)
+		e.ds.GetOrCreateModel(model).GetAttributes().Put(InflightRequestsAttributeKey, c)
 	}
 	return nil
 }
