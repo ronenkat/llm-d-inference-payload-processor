@@ -22,7 +22,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/llm-d/llm-d-inference-payload-processor/pkg/datastore"
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework"
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/datalayer"
 	dlsrc "github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/datalayer/datasource"
@@ -89,7 +88,7 @@ func makeResponseEvent(model string, durationMs int, maxTokens float64) dlsrc.Ev
 }
 
 // getInflightRequests asserts the inflight-requests attribute exists for model and returns it.
-func getInflightRequests(t testing.TB, ds datastore.Datastore, model string) InflightRequestsCount {
+func getInflightRequests(t testing.TB, ds *fakeDataStore, model string) InflightRequestsCount {
 	t.Helper()
 	val, ok := ds.GetOrCreateModel(model).GetAttributes().Get(InflightRequestsAttributeKey)
 	if !ok {
@@ -102,7 +101,7 @@ func getInflightRequests(t testing.TB, ds datastore.Datastore, model string) Inf
 	return rc
 }
 
-func newInflightRequestsTest(t *testing.T) (*InflightRequestsExtractor, datastore.Datastore) {
+func newInflightRequestsTest(t *testing.T) (*InflightRequestsExtractor, *fakeDataStore) {
 	t.Helper()
 	ds := newFakeDataStore()
 	return NewInflightRequestsExtractor(ds), ds
