@@ -18,14 +18,48 @@ package inflightrequests
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/datastore"
-	"github.com/llm-d/llm-d-inference-payload-processor/pkg/datastore/inmemory"
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework"
+	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/datalayer"
 	dlsrc "github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/datalayer/datasource"
 )
+
+// fakeDataStore is an in-memory DataStore for tests.
+type fakeDataStore struct {
+	mu     sync.Mutex
+	models map[string]datalayer.Model
+}
+
+func newFakeDataStore() *fakeDataStore {
+	return &fakeDataStore{models: make(map[string]datalayer.Model)}
+}
+
+func (f *fakeDataStore) GetOrCreateModel(name string) datalayer.Model {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if m, ok := f.models[name]; ok {
+		return m
+	}
+	m := datalayer.NewModel(name)
+	f.models[name] = m
+	return m
+}
+
+func (f *fakeDataStore) DeleteModel(name string) {}
+
+func (f *fakeDataStore) Models() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	names := make([]string, 0, len(f.models))
+	for name := range f.models {
+		names = append(names, name)
+	}
+	return names
+}
 
 // makeRequestEvent creates a RequestEventType event with model and max_tokens.
 func makeRequestEvent(model string, maxTokens float64) dlsrc.Event {
@@ -70,7 +104,7 @@ func getInflightRequests(t testing.TB, ds datastore.Datastore, model string) Inf
 
 func newInflightRequestsTest(t *testing.T) (*InflightRequestsExtractor, datastore.Datastore) {
 	t.Helper()
-	ds := inmemory.NewDatastore()
+	ds := newFakeDataStore()
 	return NewInflightRequestsExtractor(ds), ds
 }
 
