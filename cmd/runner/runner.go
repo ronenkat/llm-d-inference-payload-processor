@@ -38,7 +38,7 @@ import (
 	logutil "github.com/llm-d/llm-d-inference-payload-processor/pkg/common/observability/logging"
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/common/observability/profiling"
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/common/observability/tracing"
-	"github.com/llm-d/llm-d-inference-payload-processor/pkg/datastore"
+	"github.com/llm-d/llm-d-inference-payload-processor/pkg/datastore/inmemory"
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework"
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/metrics"
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/plugins/basemodelextractor"
@@ -171,7 +171,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 	}
 
-	ds := datastore.NewStore()
+	ds := inmemory.NewDatastore()
 	handle := framework.NewHandle(ctx, mgr, ds)
 
 	// Register factories for all known in-tree plugins
