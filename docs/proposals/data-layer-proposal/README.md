@@ -31,7 +31,7 @@ flowchart TD
     PP["Plugin Pipeline\nFilter → Score → Pick"]
     NS["NotificationSource\nchan Event  (buffered)"]
     EL["event loop"]
-    ExtA["InflightRequestsExtractor"]
+    ExtA["RequestMetadataExtractor"]
     ExtB["LatencyExtractor\n(future)"]
     DS[("Datastore\npkg/datastore")]
     MS["Model Selector\n(InflightRequestsScorer)"]
@@ -53,11 +53,14 @@ event loop reads each event from the channel as it arrives and fans it out to al
 `Extractor`s. Each extractor switches on `Event.Type` and handles what it understands,
 ignoring the rest.
 
-### Types (`pkg/framework/datalayer/`)
+### Types (`pkg/framework/`)
+
+Framework-level interfaces and event types live in `package framework` (`pkg/framework/datalayer.go`).
+Model and attribute types live in the `pkg/framework/datalayer` sub-package.
 
 ```go
 type DataSource interface {
-    framework.Plugin                  // TypedName() TypedName
+    Plugin                             // TypedName() TypedName
     Start(ctx context.Context) error
     // Stop signals the component to shut down and blocks until it has fully stopped.
     Stop()
@@ -89,7 +92,7 @@ type NotificationSource interface {
 
 // Extractor processes a batch of Events. It does not manage its own goroutines.
 type Extractor interface {
-    framework.Plugin
+    Plugin
     Extract(ctx context.Context, events []Event) error
 }
 ```
@@ -98,22 +101,23 @@ See [Appendix](#appendix) for payload struct definitions and a full extractor ex
 
 ### DataStore injection
 
-The `DataStore` is passed directly to each extractor's constructor. This keeps the
-`NotificationSource` a pure event dispatcher with no knowledge of storage, and avoids routing the store through `framework.Handle`.
+The `DataStore` is available to extractor factories via `plugin.Handle.Datastore()`.
+This keeps construction consistent with other plugins while the `NotificationSource`
+remains a pure event dispatcher with no knowledge of storage.
 
-The concrete implementation lives in `pkg/datastore/inmemory`, separate from the
-`pkg/datastore.Datastore` interface, to make room for future backends (e.g. Redis):
+The concrete implementation lives in `pkg/datastore`, separate from the
+`framework.DataStore` interface, to make room for future backends (e.g. Redis):
 
 ```go
-ds := inmemory.NewDatastore()
-extractor := inflightrequests.NewInflightRequestsExtractor(ds)
+ds := datastore.NewStore()
+extractor := requestmetadata.NewRequestMetadataExtractor(ds)
 ```
 
 ### Registration (`runner.go`)
 
 ```go
-ds := inmemory.NewDatastore()
-src, err := notificationsource.New("default", inflightrequests.NewInflightRequestsExtractor(ds))
+ds := datastore.NewStore()
+src, err := notificationsource.New("default", requestmetadata.NewRequestMetadataExtractor(ds))
 if err != nil { ... }
 if err := src.Start(ctx); err != nil { ... }
 // TODO: pass src to the producer so it can call src.Notify(...)
@@ -129,13 +133,14 @@ consistent with how model-selector plugins are configured via CLI flags.
 
 ## Implementation Steps
 
-1. Add `DataSource`, `DataStore`, `EventNotifier`, `Event`, `NotificationSource`, `Extractor`, payload types to `pkg/framework/datalayer/`
-2. Implement `NotificationSource` (buffered channel + event loop) in `pkg/plugins/datalayer/notificationsource/`
-3. Implement `InflightRequestsExtractor` in `pkg/plugins/datalayer/inflightrequests/`
-4. Implement `InflightRequestsScorer` in `pkg/framework/modelselector/scorer/inflightrequests/`
-5. Wire DataStore + extractor + NotificationSource in `runner.go`
-6. Add `src.Notify(...)` calls to the producer alongside existing pipeline dispatch
-7. Config-driven registration of data layer plugins
+1. Add `DataSource`, `DataStore`, `EventNotifier`, `Event`, `NotificationSource`, `Extractor`, payload types to `pkg/framework/` (`datalayer.go`)
+2. Add `Model`, `AttributeMap` types to `pkg/framework/datalayer/`
+3. Implement `NotificationSource` (buffered channel + event loop) in `pkg/framework/plugins/datalayer/notificationsource/`
+4. Implement `RequestMetadataExtractor` in `pkg/framework/plugins/datalayer/requestmetadata/`
+5. Implement `InflightRequestsScorer` in `pkg/framework/plugins/modelselector/scorer/inflightrequests/`
+6. Wire DataStore + extractor + NotificationSource in `runner.go`
+7. Add `src.Notify(...)` calls to the producer alongside existing pipeline dispatch
+8. Config-driven registration of data layer plugins
 
 ---
 
@@ -144,37 +149,37 @@ consistent with how model-selector plugins are configured via CLI flags.
 ### Payload types
 
 ```go
-// package datalayer (pkg/framework/datalayer/)
+// package framework (pkg/framework/)
 
 // RequestPayload is the Payload for RequestEventType.
 // Carries the already-parsed request — no re-parsing needed.
 type RequestPayload struct {
-    Request *framework.InferenceRequest
+    Request *InferenceRequest
 }
 
 // ResponsePayload is the Payload for ResponseEventType.
 // Duration is computed by the producer and passed directly.
 // All response body fields are accessible via Response.Body.
 type ResponsePayload struct {
-    Request  *framework.InferenceRequest
-    Response *framework.InferenceResponse
+    Request  *InferenceRequest
+    Response *InferenceResponse
     Duration time.Duration
 }
 ```
 
 ### Extractor definitions
 
-#### `InflightRequestsExtractor` — owns `"inflight-requests"` (`pkg/plugins/datalayer/inflightrequests`)
+#### `RequestMetadataExtractor` — owns `"request-metadata"` (`pkg/framework/plugins/datalayer/requestmetadata`)
 
 | | |
 |---|---|
 | Handles | `RequestEventType` (increment), `ResponseEventType` (decrement) |
 | Reads | `model`, `max_tokens` from `Request.Body` |
-| State | `map[string]InflightRequestsCount` — in-flight counters per model |
-| Writes | `InflightRequestsCount{Requests int64, Tokens int64}` per model |
+| State | `map[string]RequestMetadataCount` — in-flight counters per model |
+| Writes | `RequestMetadataCount{Requests int64, Tokens int64}` per model |
 
 ```go
-type InflightRequestsCount struct {
+type RequestMetadataCount struct {
     Requests int64
     Tokens   int64 // sum of max_tokens across in-flight requests
 }
