@@ -14,23 +14,19 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package framework
+package datasource
 
 import (
 	"context"
 	"time"
 
-	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/datalayer"
+	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/interface/plugin"
+	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/interface/requesthandling"
 )
-
-// DataStore provides model-keyed access to aggregated runtime metrics.
-type DataStore interface {
-	GetOrCreateModel(name string) datalayer.Model
-}
 
 // DataSource is the base interface for background data layer components.
 type DataSource interface {
-	Plugin
+	plugin.Plugin
 	Start(ctx context.Context) error
 	// Stop signals the component to shut down and blocks until it has fully stopped.
 	Stop()
@@ -52,13 +48,13 @@ type Event struct {
 
 // RequestPayload is the Payload for RequestEventType.
 type RequestPayload struct {
-	Request *InferenceRequest
+	Request *requesthandling.InferenceRequest
 }
 
 // ResponsePayload is the Payload for ResponseEventType.
 type ResponsePayload struct {
-	Request  *InferenceRequest
-	Response *InferenceResponse
+	Request  *requesthandling.InferenceRequest
+	Response *requesthandling.InferenceResponse
 	Duration time.Duration
 }
 
@@ -79,6 +75,18 @@ type NotificationSource interface {
 
 // Extractor processes a batch of Events. It does not manage its own goroutines.
 type Extractor interface {
-	Plugin
+	plugin.Plugin
 	Extract(ctx context.Context, events []Event) error
+}
+
+// PollingSource is a poll-based Datasource that fetches data from various sources at regular intervals.
+type PollingSource interface {
+	DataSource
+	RegisterCollector(c Collector, frequency time.Duration)
+}
+
+// A Collector is a poll mechanism to fetch data from a configured data source.
+type Collector interface {
+	plugin.Plugin
+	Poll(ctx context.Context) (any, error)
 }

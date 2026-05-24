@@ -19,8 +19,9 @@ package modelselector
 import (
 	"context"
 
-	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework"
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/datalayer"
+	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/interface/plugin"
+	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/interface/requesthandling"
 )
 
 type ScoredModel struct {
@@ -34,5 +35,5 @@ type ProfileRunResult struct {
 }
 
 type ModelSelectorProfile interface {
-	Run(ctx context.Context, request *framework.InferenceRequest, cycleState *framework.CycleState, candidateModels []datalayer.Model) (*ProfileRunResult, error)
+	Run(ctx context.Context, request *requesthandling.InferenceRequest, cycleState *plugin.CycleState, candidateModels []datalayer.Model) (*ProfileRunResult, error)
 }

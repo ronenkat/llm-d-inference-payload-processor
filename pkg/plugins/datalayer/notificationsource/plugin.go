@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package datalayer
+package notificationsource
 
 import (
 	"context"
@@ -25,59 +25,59 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework"
+	dlsrc "github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/datalayer/datasource"
+	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/interface/plugin"
 )
 
 const (
-	NotificationSourcePluginType = "notification-source"
+	PluginType = "notification-source"
 
 	defaultBufferSize = 10000
 )
 
 // compile-time interface assertion
-var _ framework.NotificationSource = &notificationSource{}
+var _ dlsrc.NotificationSource = &notificationSource{}
 
 type notificationSource struct {
-	name       framework.TypedName
-	ch         chan framework.Event
-	extractors []framework.Extractor
+	name       plugin.TypedName
+	ch         chan dlsrc.Event
+	extractors []dlsrc.Extractor
 
 	started atomic.Bool
 	cancel  context.CancelFunc
 	done    chan struct{}
 }
 
-// NotificationSourceFactory is the factory function for NotificationSource.
-func NotificationSourceFactory(name string, _ json.RawMessage, _ framework.Handle) (framework.Plugin, error) {
-	src, err := NewNotificationSource(name)
+// Factory is the factory function for NotificationSource.
+func Factory(name string, _ json.RawMessage, _ plugin.Handle) (plugin.Plugin, error) {
+	src, err := New(name)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create '%s' plugin - %w", NotificationSourcePluginType, err)
+		return nil, fmt.Errorf("failed to create '%s' plugin - %w", PluginType, err)
 	}
 	return src, nil
 }
 
-// NewNotificationSource creates a NotificationSource that delivers each event
-// to the given extractors as it arrives.
-func NewNotificationSource(name string, extractors ...framework.Extractor) (framework.NotificationSource, error) {
+// New creates a NotificationSource that delivers each event to the given extractors as it arrives.
+func New(name string, extractors ...dlsrc.Extractor) (dlsrc.NotificationSource, error) {
 	if name == "" {
-		return nil, fmt.Errorf("name is required for plugin '%s'", NotificationSourcePluginType)
+		return nil, fmt.Errorf("name is required for plugin '%s'", PluginType)
 	}
 	return &notificationSource{
-		name:       framework.TypedName{Type: NotificationSourcePluginType, Name: name},
-		ch:         make(chan framework.Event, defaultBufferSize),
+		name:       plugin.TypedName{Type: PluginType, Name: name},
+		ch:         make(chan dlsrc.Event, defaultBufferSize),
 		extractors: extractors,
 		done:       make(chan struct{}),
 	}, nil
 }
 
-func (n *notificationSource) TypedName() framework.TypedName { return n.name }
+func (n *notificationSource) TypedName() plugin.TypedName { return n.name }
 
-func (n *notificationSource) RegisterExtractor(e framework.Extractor) {
+func (n *notificationSource) RegisterExtractor(e dlsrc.Extractor) {
 	n.extractors = append(n.extractors, e)
 }
 
 // Notify fires an event non-blocking; drops silently if the buffer is full.
-func (n *notificationSource) Notify(e framework.Event) {
+func (n *notificationSource) Notify(e dlsrc.Event) {
 	select {
 	case n.ch <- e:
 	default:
@@ -118,7 +118,7 @@ func (n *notificationSource) eventLoop(ctx context.Context, ready chan struct{})
 			// Extractors are called sequentially; current extractors are in-memory only.
 			// Switch to a WaitGroup if any extractor performs I/O.
 			for _, ext := range n.extractors {
-				if err := ext.Extract(ctx, []framework.Event{e}); err != nil {
+				if err := ext.Extract(ctx, []dlsrc.Event{e}); err != nil {
 					logger.Error(err, "extractor error", "extractor", ext.TypedName())
 				}
 			}

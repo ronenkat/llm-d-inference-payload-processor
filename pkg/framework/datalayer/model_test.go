@@ -14,21 +14,23 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package framework
+package datalayer
 
-const (
-	separator = "/"
-)
+import "testing"
 
-// TypedName is a utility struct providing a type and a name to plugins.
-type TypedName struct {
-	// Type returns the type of a plugin.
-	Type string
-	// Name returns the name of a plugin instance.
-	Name string
-}
+// Verifies non-nil model
+// Verifies name is preserved
+// Verifies attributes are initialized
+func TestNewModel(t *testing.T) {
+	m := NewModel("test-model")
 
-// String returns the type and name rendered as "<name>/<type>".
-func (tn TypedName) String() string {
-	return tn.Name + separator + tn.Type
+	if m == nil {
+		t.Fatal("expected model to be non-nil")
+	}
+	if got := m.GetName(); got != "test-model" {
+		t.Fatalf("expected model name %q, got %q", "test-model", got)
+	}
+	if m.GetAttributes() == nil {
+		t.Fatal("expected model attributes to be initialized")
+	}
 }

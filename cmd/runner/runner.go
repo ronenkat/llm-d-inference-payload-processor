@@ -38,11 +38,17 @@ import (
 	logutil "github.com/llm-d/llm-d-inference-payload-processor/pkg/common/observability/logging"
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/common/observability/profiling"
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/common/observability/tracing"
-	"github.com/llm-d/llm-d-inference-payload-processor/pkg/datalayer"
-	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework"
+	"github.com/llm-d/llm-d-inference-payload-processor/pkg/datastore/inmemory"
+	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/interface/plugin"
+	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/interface/requesthandling"
+	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/plugins/modelselector/picker/maxscore"
+	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/plugins/modelselector/picker/random"
+	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/plugins/modelselector/picker/weightedrandom"
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/metrics"
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/plugins/basemodelextractor"
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/plugins/bodyfieldtoheader"
+	notificationsource "github.com/llm-d/llm-d-inference-payload-processor/pkg/plugins/datalayer/notificationsource"
+	requestmetadata "github.com/llm-d/llm-d-inference-payload-processor/pkg/plugins/datalayer/requestmetadata"
 	modelselectorplugin "github.com/llm-d/llm-d-inference-payload-processor/pkg/plugins/modelselector"
 	runserver "github.com/llm-d/llm-d-inference-payload-processor/pkg/server"
 	"github.com/llm-d/llm-d-inference-payload-processor/version"
@@ -55,8 +61,8 @@ var setupLog = ctrl.Log.WithName("setup")
 func NewRunner() *Runner {
 	return &Runner{
 		payloadProcessorExecutableName: "payload-processor",
-		requestPlugins:                 []framework.RequestProcessor{},
-		responsePlugins:                []framework.ResponseProcessor{},
+		requestPlugins:                 []requesthandling.RequestProcessor{},
+		responsePlugins:                []requesthandling.ResponseProcessor{},
 		customCollectors:               []prometheus.Collector{},
 	}
 }
@@ -66,10 +72,10 @@ type Runner struct {
 	payloadProcessorExecutableName string
 	// request processing plugin instances executed by the request handler,
 	// in the same order the plugin flags are provided.
-	requestPlugins []framework.RequestProcessor
+	requestPlugins []requesthandling.RequestProcessor
 	// response processing plugin instances executed by the response handler,
 	// in the same order the plugin flags are provided.
-	responsePlugins []framework.ResponseProcessor
+	responsePlugins []requesthandling.ResponseProcessor
 
 	customCollectors []prometheus.Collector
 }
@@ -171,7 +177,8 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 	}
 
-	handle := framework.NewHandle(ctx, mgr)
+	ds := inmemory.NewDatastore()
+	handle := plugin.NewHandle(ctx, mgr, ds)
 
 	// Register factories for all known in-tree plugins
 	r.registerInTreePlugins()
@@ -201,7 +208,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		setupLog.Info("plugins are specified, running with the specified plugins.")
 
 		for _, s := range opts.PluginSpecs {
-			factory, ok := framework.Registry[s.Type]
+			factory, ok := plugin.Registry[s.Type]
 			if !ok {
 				err := fmt.Errorf("unknown plugin type %q (no factory registered)", s.Type)
 				setupLog.Error(err, "Failed to find plugin factory", "pluginType", s.Type)
@@ -212,13 +219,25 @@ func (r *Runner) Run(ctx context.Context) error {
 				setupLog.Error(err, fmt.Sprintf("invalid %s#%s: %v\n", s.Type, s.Name, err))
 				return err
 			}
-			if requestProcessor, ok := instance.(framework.RequestProcessor); ok {
+			if requestProcessor, ok := instance.(requesthandling.RequestProcessor); ok {
 				r.requestPlugins = append(r.requestPlugins, requestProcessor)
 			}
-			if responseProcessor, ok := instance.(framework.ResponseProcessor); ok {
+			if responseProcessor, ok := instance.(requesthandling.ResponseProcessor); ok {
 				r.responsePlugins = append(r.responsePlugins, responseProcessor)
 			}
 		}
+	}
+
+	// Wire the request-metadata data pipeline: extractor → notification source.
+	// TODO: config-driven path does not yet support NotificationSource + extractors.
+	notifSrc, err := notificationsource.New("default", requestmetadata.NewRequestMetadataExtractor(ds))
+	if err != nil {
+		setupLog.Error(err, "failed to create notification source")
+		return err
+	}
+	if err := notifSrc.Start(ctx); err != nil {
+		setupLog.Error(err, "failed to start notification source")
+		return err
 	}
 
 	// Setup ExtProc Server Runner.
@@ -252,10 +271,15 @@ func (r *Runner) Run(ctx context.Context) error {
 
 // registerInTreePlugins registers the factory functions of all known payload processor plugins
 func (r *Runner) registerInTreePlugins() {
-	framework.Register(bodyfieldtoheader.BodyFieldToHeaderPluginType, bodyfieldtoheader.BodyFieldToHeaderPluginFactory)
-	framework.Register(basemodelextractor.BaseModelToHeaderPluginType, basemodelextractor.BaseModelToHeaderPluginFactory)
-	framework.Register(datalayer.NotificationSourcePluginType, datalayer.NotificationSourceFactory)
-	framework.Register(modelselectorplugin.ModelSelectorPluginType, modelselectorplugin.ModelSelectorPluginFactory)
+	plugin.Register(bodyfieldtoheader.BodyFieldToHeaderPluginType, bodyfieldtoheader.BodyFieldToHeaderPluginFactory)
+	plugin.Register(basemodelextractor.BaseModelToHeaderPluginType, basemodelextractor.BaseModelToHeaderPluginFactory)
+	plugin.Register(requestmetadata.PluginType, requestmetadata.ExtractorFactory)
+	plugin.Register(notificationsource.PluginType, notificationsource.Factory)
+	// register model selector plugins
+	plugin.Register(random.RandomPickerType, random.RandomPickerFactory)
+	plugin.Register(maxscore.MaxScorePickerType, maxscore.MaxScorePickerFactory)
+	plugin.Register(weightedrandom.WeightedRandomPickerType, weightedrandom.WeightedRandomPickerFactory)
+	plugin.Register(modelselectorplugin.ModelSelectorPluginType, modelselectorplugin.ModelSelectorPluginFactory)
 }
 
 // registerHealthServer adds the Health gRPC server as a Runnable to the given manager.
