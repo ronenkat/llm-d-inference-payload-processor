@@ -47,9 +47,11 @@ type Options struct {
 	SecureServing          bool // Enables secure serving.
 	MetricsEndpointAuth    bool // Enables authentication and authorization of the metrics endpoint.
 	//
-	// Plugins.
+	// Configuration.
 	//
 	PluginSpecs config.IPPPluginSpecs // Repeatable --plugin <type>:<name>[:<json>] flag values.
+	ConfigFile  string                // The path to the configuration file.
+	ConfigText  string                // The configuration specified as text, in lieu of a file.
 
 	// internal
 	fs *pflag.FlagSet // FlagSet used in AddFlags()
@@ -92,6 +94,8 @@ func (opts *Options) AddFlags(fs *pflag.FlagSet) {
 		"Enables pprof handlers. Defaults to true. Set to false to disable pprof handlers.")
 
 	fs.Var(&opts.PluginSpecs, "plugin", `Repeatable. --plugin <type>:<name>[:<json>]`)
+	fs.StringVar(&opts.ConfigFile, "config-file", opts.ConfigFile, "The path to the configuration file.")
+	fs.StringVar(&opts.ConfigText, "config-text", opts.ConfigText, "The configuration specified as text, in lieu of a file.")
 
 	opts.LoggingOptions.AddFlags(fs) // Add logging flags.
 }
