@@ -17,6 +17,7 @@ limitations under the License.
 package loader
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/go-logr/logr"
@@ -28,6 +29,7 @@ import (
 	configapi "github.com/llm-d/llm-d-inference-payload-processor/apix/config/v1alpha1"
 	config "github.com/llm-d/llm-d-inference-payload-processor/pkg/config"
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/interface/plugin"
+	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/interface/requesthandling"
 )
 
 var (
@@ -45,10 +47,19 @@ func LoadConfiguration(configBytes []byte, handle plugin.Handle, logger logr.Log
 	}
 
 	if err = instantiatePlugins(rawConfig.Plugins, handle); err != nil {
+		logger.Error(err, "failed to instantiate one or more plugins")
 		return nil, err
 	}
 
-	return nil, err
+	profiles, err := buildProfiles(rawConfig.Profiles, handle)
+	if err != nil {
+		logger.Error(err, "failed to load one or more profiles")
+		return nil, err
+	}
+
+	return &config.Config{
+		Profiles: profiles,
+	}, nil
 }
 
 func loadRawConfiguration(configBytes []byte, logger logr.Logger) (*configapi.PayloadProcessorConfig, error) {
@@ -58,6 +69,7 @@ func loadRawConfiguration(configBytes []byte, logger logr.Logger) (*configapi.Pa
 		rawConfig = &configapi.PayloadProcessorConfig{}
 		codecs := serializer.NewCodecFactory(scheme, serializer.EnableStrict)
 		if err := runtime.DecodeInto(codecs.UniversalDecoder(), configBytes, rawConfig); err != nil {
+			logger.Error(err, "failed to decode configuration JSON/YAML")
 			return nil, fmt.Errorf("failed to decode configuration JSON/YAML: %w", err)
 		}
 		logger.Info("Loaded raw configuration", "config", rawConfig.String())
@@ -96,4 +108,47 @@ func instantiatePlugins(configuredPlugins []configapi.PluginSpec, handle plugin.
 	}
 
 	return nil
+}
+
+func buildProfiles(rawProfiles []configapi.Profile, handle plugin.Handle) (map[string]requesthandling.Profile, error) {
+	profiles := map[string]requesthandling.Profile{}
+
+	for _, rawProfile := range rawProfiles {
+		if len(rawProfile.Name) == 0 {
+			return nil, errors.New("a profile was specified without a name")
+		}
+
+		theProfile := requesthandling.Profile{
+			RequestPlugins:  make([]requesthandling.RequestProcessor, len(rawProfile.Plugins.Request)),
+			ResponsePlugins: make([]requesthandling.ResponseProcessor, len(rawProfile.Plugins.Response)),
+		}
+
+		for idx, pluginRef := range rawProfile.Plugins.Request {
+			rawPlugin := handle.Plugin(pluginRef.PluginRef)
+			if rawPlugin == nil {
+				return nil, fmt.Errorf("there is no plugin named %s", pluginRef.PluginRef)
+			}
+			thePlugin, ok := rawPlugin.(requesthandling.RequestProcessor)
+			if !ok {
+				return nil, fmt.Errorf("the plugin named %s is not a RequestProcessor", pluginRef.PluginRef)
+			}
+			theProfile.RequestPlugins[idx] = thePlugin
+		}
+
+		for idx, pluginRef := range rawProfile.Plugins.Response {
+			rawPlugin := handle.Plugin(pluginRef.PluginRef)
+			if rawPlugin == nil {
+				return nil, fmt.Errorf("there is no plugin named %s", pluginRef.PluginRef)
+			}
+			thePlugin, ok := rawPlugin.(requesthandling.ResponseProcessor)
+			if !ok {
+				return nil, fmt.Errorf("the plugin named %s is not a ResponseProcessor", pluginRef.PluginRef)
+			}
+			theProfile.ResponsePlugins[idx] = thePlugin
+		}
+
+		profiles[rawProfile.Name] = theProfile
+	}
+
+	return profiles, nil
 }
