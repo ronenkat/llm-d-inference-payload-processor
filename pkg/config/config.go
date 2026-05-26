@@ -20,10 +20,17 @@ import "github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/interfa
 
 // Config contains the final configuration loaded by the configuration loader
 type Config struct {
-	// RequestPlugins are the request processing plugin instances executed by the request handler,
+	// PreProcessors are the pre-processing plugin instances executed by the request handler,
 	// in the same order provided in the configuration file.
-	RequestPlugins []requesthandling.RequestProcessor
-	// ResponsePlugins are the response processing plugin instances executed by the response handler,
+	PreProcessors []requesthandling.PreProcessor
+
+	// ProfilePicker picks the profile to be run as the pipeline for the incoming requests
+	ProfilePicker requesthandling.ProfilePicker
+
+	// Profiles is the set of pipeline profiles loaded from the configuration file
+	Profiles map[string]requesthandling.Profile
+
+	// PostProcessors are the response processing plugin instances executed by the response handler,
 	// in the same order provided in the configuration file.
-	ResponsePlugins []requesthandling.ResponseProcessor
+	PostProcessors []requesthandling.PostProcessor
 }
