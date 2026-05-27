@@ -14,6 +14,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// PLEASE NOTE:
+//
+// The Kubernetes machinery is used to read this struct from YAML text.
+// HOWEVER, the CRD JSON Schema validation is NOT used as we don't have
+// a real CRD. The Kubernetes validation tags are just for documentation.
+
 package v1alpha1
 
 import (
@@ -32,6 +38,7 @@ type PayloadProcessorConfig struct {
 
 	// +required
 	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
 	// Plugins is the list of plugins that will be instantiated.
 	Plugins []PluginSpec `json:"plugins"`
 
@@ -40,12 +47,13 @@ type PayloadProcessorConfig struct {
 	// that will pre-process incoming requests
 	PreProcessing *PluginRefList `json:"preProcessing"`
 
-	// *optional
+	// +optional
 	// ProfilePicker is the plugin that chooses the profile to be used
 	ProfilePicker *PluginRef `json:"profilePicker"`
 
 	// +required
 	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinItems=1
 	// Profiles is the list of named Profiles
 	// that will be created.
 	Profiles []Profile `json:"profiles"`
@@ -94,6 +102,7 @@ type PluginSpec struct {
 
 	// +required
 	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
 	// Type specifies the plugin type to be instantiated.
 	Type string `json:"type,omitempty"`
 
@@ -120,6 +129,7 @@ func (ps PluginSpec) String() string {
 type PluginRefList struct {
 	// +required
 	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinItems=1
 	// Plugins is the list of plugins being referenced.
 	Plugins []PluginRef `json:"plugins"`
 }
@@ -137,13 +147,14 @@ func (prl PluginRefList) String() string {
 type Profile struct {
 	// +required
 	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
 	// Name specifies the name of this PayloadProcessorProfile
 	Name string `json:"name"`
 
 	// +required
 	// +kubebuilder:validation:Required
 	// Plugins is the list of plugins for this Profile.
-	Plugins ProfilePlugins `json:"plugins"`
+	Plugins *ProfilePlugins `json:"plugins"`
 }
 
 func (prof Profile) String() string {

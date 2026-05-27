@@ -110,6 +110,10 @@ func loadRawConfiguration(configBytes []byte, logger logr.Logger) (*configapi.Pa
 
 func instantiatePlugins(configuredPlugins []configapi.PluginSpec, handle plugin.Handle) error {
 	pluginNames := sets.New[string]()
+	if len(configuredPlugins) == 0 {
+		return errors.New("one or more plugins must be defined")
+	}
+
 	for _, spec := range configuredPlugins {
 		if spec.Type == "" {
 			return fmt.Errorf("plugin '%s' is missing a type", spec.Name)
@@ -135,11 +139,21 @@ func instantiatePlugins(configuredPlugins []configapi.PluginSpec, handle plugin.
 }
 
 func buildProfiles(rawProfiles []configapi.Profile, handle plugin.Handle) (map[string]requesthandling.Profile, error) {
+	if len(rawProfiles) == 0 {
+		return nil, errors.New("at least one profile must be specified")
+	}
+
 	profiles := map[string]requesthandling.Profile{}
 
 	for _, rawProfile := range rawProfiles {
 		if len(rawProfile.Name) == 0 {
 			return nil, errors.New("a profile was specified without a name")
+		}
+		if rawProfile.Plugins == nil {
+			return nil, fmt.Errorf("the profile %s must have a Plugins section", rawProfile.Name)
+		}
+		if len(rawProfile.Plugins.Request) == 0 && len(rawProfile.Plugins.Response) == 0 {
+			return nil, fmt.Errorf("the profile %s must have one or both of the Request and Response sections", rawProfile.Name)
 		}
 
 		theProfile := requesthandling.Profile{

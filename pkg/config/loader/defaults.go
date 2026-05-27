@@ -44,7 +44,7 @@ func loadDefaultConfig() *configapi.PayloadProcessorConfig {
 		Profiles: []configapi.Profile{
 			{
 				Name: "default",
-				Plugins: configapi.ProfilePlugins{
+				Plugins: &configapi.ProfilePlugins{
 					Request: []configapi.PluginRef{
 						{PluginRef: bodyfieldtoheader.BodyFieldToHeaderPluginType},
 						{PluginRef: basemodelextractor.BaseModelToHeaderPluginType},
