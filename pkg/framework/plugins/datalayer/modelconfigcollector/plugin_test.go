@@ -24,6 +24,7 @@ import (
 
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/datastore"
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/interface/datalayer"
+	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/interface/plugin"
 	ctrlbuilder "sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -31,56 +32,87 @@ import (
 // fakeHandle implements plugin.Handle for unit tests.
 type fakeHandle struct{ ds datalayer.Datastore }
 
-func (f *fakeHandle) Context() context.Context                { return context.Background() }
-func (f *fakeHandle) Client() client.Client                   { return nil }
-func (f *fakeHandle) ReconcilerBuilder() *ctrlbuilder.Builder { return nil }
-func (f *fakeHandle) Datastore() datalayer.Datastore          { return f.ds }
+func (f *fakeHandle) Context() context.Context                         { return context.Background() }
+func (f *fakeHandle) Client() client.Client                            { return nil }
+func (f *fakeHandle) ReconcilerBuilder() *ctrlbuilder.Builder          { return nil }
+func (f *fakeHandle) Datastore() datalayer.Datastore                   { return f.ds }
+func (f *fakeHandle) Plugin(string) plugin.Plugin                      { return nil }
+func (f *fakeHandle) AddPlugin(string, plugin.Plugin)                  {}
+func (f *fakeHandle) GetAllPlugins() []plugin.Plugin                   { return nil }
+func (f *fakeHandle) GetAllPluginsWithNames() map[string]plugin.Plugin { return nil }
 
-func writeTempConfig(t *testing.T, cfg ModelsConfig) string {
+// useFactory creates a collector via CollectorFactory or fails the test.
+func useFactory(t *testing.T, path string, ds datalayer.Datastore) *ModelConfigCollector {
+	t.Helper()
+	rawCfg, _ := json.Marshal(PluginConfig{ModelsPath: path})
+	p, err := CollectorFactory("test", rawCfg, &fakeHandle{ds: ds})
+	if err != nil {
+		t.Fatalf("CollectorFactory: %v", err)
+	}
+	return p.(*ModelConfigCollector)
+}
+
+func writeTempModelsConfig(t *testing.T, cfg ModelsConfig) string {
 	t.Helper()
 	data, err := json.Marshal(cfg)
 	if err != nil {
 		t.Fatalf("marshal config: %v", err)
 	}
+	return writeTempRaw(t, string(data))
+}
+
+func writeTempRaw(t *testing.T, content string) string {
+	t.Helper()
 	f, err := os.CreateTemp(t.TempDir(), "models-*.json")
 	if err != nil {
 		t.Fatalf("create temp file: %v", err)
 	}
-	if _, err := f.Write(data); err != nil {
+	if _, err := f.WriteString(content); err != nil {
 		t.Fatalf("write temp file: %v", err)
 	}
 	f.Close()
 	return f.Name()
 }
 
-func TestPollLoadsModels(t *testing.T) {
+// --- Factory-level tests ---
+
+func TestCollectorFactory_InvalidJSON(t *testing.T) {
 	ds := datastore.NewFakeDataStore()
-	path := writeTempConfig(t, ModelsConfig{
-		Models: []ModelConfiguration{{Name: "m1"}, {Name: "m2"}},
-	})
-
-	c := NewModelConfigCollector("test", path, ds)
-	if _, err := c.Poll(context.Background()); err != nil {
-		t.Fatalf("Poll failed: %v", err)
-	}
-
-	models := ds.Models()
-	if len(models) != 2 {
-		t.Errorf("expected 2 models, got %d: %v", len(models), models)
+	_, err := CollectorFactory("x", json.RawMessage(`not-json`), &fakeHandle{ds: ds})
+	if err == nil {
+		t.Error("expected error for invalid JSON plugin config, got nil")
 	}
 }
 
-func TestPollMissingFile(t *testing.T) {
+func TestCollectorFactory_EmptyInput(t *testing.T) {
 	ds := datastore.NewFakeDataStore()
-	c := NewModelConfigCollector("test", "/no/such/file.json", ds)
-	if _, err := c.Poll(context.Background()); err == nil {
-		t.Error("expected error for missing file, got nil")
+	_, err := CollectorFactory("x", json.RawMessage(``), &fakeHandle{ds: ds})
+	if err == nil {
+		t.Error("expected error for empty plugin config input, got nil")
 	}
 }
 
-func TestCollectorFactoryWiresDatastore(t *testing.T) {
+func TestCollectorFactory_MissingModelsPath(t *testing.T) {
 	ds := datastore.NewFakeDataStore()
-	path := writeTempConfig(t, ModelsConfig{Models: []ModelConfiguration{{Name: "m1"}}})
+	rawCfg, _ := json.Marshal(PluginConfig{}) // modelsPath omitted → empty string
+	_, err := CollectorFactory("x", rawCfg, &fakeHandle{ds: ds})
+	if err == nil {
+		t.Error("expected error for missing modelsPath, got nil")
+	}
+}
+
+func TestCollectorFactory_FileNotExist(t *testing.T) {
+	ds := datastore.NewFakeDataStore()
+	rawCfg, _ := json.Marshal(PluginConfig{ModelsPath: "/no/such/file.json"})
+	_, err := CollectorFactory("x", rawCfg, &fakeHandle{ds: ds})
+	if err == nil {
+		t.Error("expected error for non-existent file, got nil")
+	}
+}
+
+func TestCollectorFactory_WiresDatastoreAndName(t *testing.T) {
+	ds := datastore.NewFakeDataStore()
+	path := writeTempModelsConfig(t, ModelsConfig{Models: []ModelConfiguration{{Name: "m1"}}})
 
 	rawCfg, _ := json.Marshal(PluginConfig{ModelsPath: path})
 	p, err := CollectorFactory("my-collector", rawCfg, &fakeHandle{ds: ds})
@@ -97,5 +129,46 @@ func TestCollectorFactoryWiresDatastore(t *testing.T) {
 	}
 	if c.TypedName().Name != "my-collector" {
 		t.Errorf("expected name %q, got %q", "my-collector", c.TypedName().Name)
+	}
+}
+
+// --- Poll-level tests ---
+
+func TestPoll_LoadsModels(t *testing.T) {
+	ds := datastore.NewFakeDataStore()
+	path := writeTempModelsConfig(t, ModelsConfig{
+		Models: []ModelConfiguration{{Name: "m1"}, {Name: "m2"}},
+	})
+	c := useFactory(t, path, ds)
+
+	if _, err := c.Poll(context.Background()); err != nil {
+		t.Fatalf("Poll failed: %v", err)
+	}
+
+	models := ds.Models()
+	if len(models) != 2 {
+		t.Errorf("expected 2 models, got %d: %v", len(models), models)
+	}
+}
+
+func TestPoll_InvalidFileContent(t *testing.T) {
+	ds := datastore.NewFakeDataStore()
+	path := writeTempRaw(t, `this is not valid json {{{`)
+	c := useFactory(t, path, ds)
+
+	if _, err := c.Poll(context.Background()); err == nil {
+		t.Error("expected error for invalid JSON file content, got nil")
+	}
+}
+
+// TestPoll_WrongSchema verifies that a file with a type mismatch (e.g. "models" is a string
+// instead of an array) causes Poll to return an error.
+func TestPoll_WrongSchema(t *testing.T) {
+	ds := datastore.NewFakeDataStore()
+	path := writeTempRaw(t, `{"models": "not-an-array"}`)
+	c := useFactory(t, path, ds)
+
+	if _, err := c.Poll(context.Background()); err == nil {
+		t.Error("expected error for wrong-schema file content, got nil")
 	}
 }

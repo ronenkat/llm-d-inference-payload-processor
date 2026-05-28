@@ -19,6 +19,7 @@ package modelconfigcollector
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/interface/datalayer"
@@ -55,9 +56,16 @@ type ModelConfigCollector struct {
 }
 
 // CollectorFactory creates a ModelConfigCollector from the plugin handle and raw JSON config.
+// It validates that modelsPath is set and that the file exists; content parsing happens in Poll.
 func CollectorFactory(name string, rawCfg json.RawMessage, h plugin.Handle) (plugin.Plugin, error) {
 	var cfg PluginConfig
 	if err := json.Unmarshal(rawCfg, &cfg); err != nil {
+		return nil, err
+	}
+	if cfg.ModelsPath == "" {
+		return nil, errors.New("modelsPath is required")
+	}
+	if _, err := os.Stat(cfg.ModelsPath); err != nil {
 		return nil, err
 	}
 	return NewModelConfigCollector(name, cfg.ModelsPath, h.Datastore()), nil
