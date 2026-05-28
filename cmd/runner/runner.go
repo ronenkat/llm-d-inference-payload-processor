@@ -186,11 +186,16 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 
 	for _, src := range r.notificationSources {
-		if err := mgr.Add(runnable.NoLeaderElection(runnable.DataSourceRunnable(src))); err != nil {
-			setupLog.Error(err, "failed to register notification source", "name", src.TypedName().Name)
+		if err := src.Start(ctx); err != nil {
+			setupLog.Error(err, "failed to start notification source", "name", src.TypedName().Name)
 			return err
 		}
 	}
+	defer func() {
+		for _, src := range r.notificationSources {
+			src.Stop()
+		}
+	}()
 
 	// Setup ExtProc Server Runner.
 	serverRunner := &runserver.ExtProcServerRunner{
