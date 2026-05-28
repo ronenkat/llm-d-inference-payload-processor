@@ -64,6 +64,7 @@ func (n *notAnExtractor) TypedName() plugin.TypedName {
 	return plugin.TypedName{Type: "not-an-extractor", Name: "not-an-extractor"}
 }
 
+// Factory with nil parameters returns a notificationSource with no extractors.
 func TestFactoryNoParameters(t *testing.T) {
 	h := newFakeHandle(nil)
 
@@ -83,6 +84,7 @@ func TestFactoryNoParameters(t *testing.T) {
 	}
 }
 
+// Factory with an empty JSON object returns a notificationSource with no extractors.
 func TestFactoryEmptyParameters(t *testing.T) {
 	h := newFakeHandle(nil)
 
@@ -96,6 +98,7 @@ func TestFactoryEmptyParameters(t *testing.T) {
 	}
 }
 
+// Factory resolves pluginRefs to Extractor instances and registers them in order.
 func TestFactoryWithExtractors(t *testing.T) {
 	ext1 := &fakeExtractor{name: "ext-a"}
 	ext2 := &fakeExtractor{name: "ext-b"}
@@ -121,6 +124,7 @@ func TestFactoryWithExtractors(t *testing.T) {
 	}
 }
 
+// Factory returns an error when the parameters JSON is malformed.
 func TestFactoryInvalidJSON(t *testing.T) {
 	h := newFakeHandle(nil)
 
@@ -130,6 +134,7 @@ func TestFactoryInvalidJSON(t *testing.T) {
 	}
 }
 
+// Factory returns an error when a pluginRef names a plugin that is not registered.
 func TestFactoryUnknownExtractorRef(t *testing.T) {
 	h := newFakeHandle(nil)
 
@@ -140,6 +145,7 @@ func TestFactoryUnknownExtractorRef(t *testing.T) {
 	}
 }
 
+// Factory returns an error when a referenced plugin does not implement the Extractor interface.
 func TestFactoryPluginNotExtractor(t *testing.T) {
 	h := newFakeHandle(map[string]plugin.Plugin{
 		"wrong-type": &notAnExtractor{},
