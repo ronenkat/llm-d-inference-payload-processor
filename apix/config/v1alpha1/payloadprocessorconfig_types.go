@@ -79,10 +79,6 @@ func (cfg PayloadProcessorConfig) String() string {
 	if cfg.ProfilePicker != nil {
 		fmt.Fprintf(contents, ", ProfilePicker: %v", cfg.ProfilePicker)
 	}
-<<<<<<< HEAD
-
-=======
->>>>>>> add-notification-source-config
 	fmt.Fprintf(contents, ", Profiles: %v", cfg.Profiles)
 	if cfg.PostProcessing != nil {
 		fmt.Fprintf(contents, ", PostProcessing: %v", cfg.PostProcessing)
