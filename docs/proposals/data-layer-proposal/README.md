@@ -4,8 +4,8 @@
 
 Introduce an **Async Data Layer** — a background observation pipeline that runs
 **outside the critical request path**. It collects runtime events fired by the producer
-(currently `server.go`), buffers them off the hot path, and dispatches them to registered
-`Extractor`s that compute aggregates and write them to the DataStore for the Model Selector.
+(currently [`pkg/handlers/server.go`](../../../pkg/handlers/server.go)), buffers them off the hot path, and dispatches them to registered
+`Extractor`s that compute aggregates and write them to the `Datastore` for the Model Selector.
 
 ## Goal
 
@@ -27,13 +27,13 @@ where to route each request.
 
 ```mermaid
 flowchart TD
-    P["Producer\n(server.go)"]
+    P["Producer\n(pkg/handlers/server.go)"]
     PP["Plugin Pipeline\nFilter → Score → Pick"]
     NS["NotificationSource\nchan Event  (buffered)"]
     EL["event loop"]
     ExtA["RequestMetadataExtractor"]
     ExtB["LatencyExtractor\n(future)"]
-    DS[("Datastore\npkg/datastore")]
+    DS[("Datastore\npkg/datastore/inmemory")]
     MS["Model Selector\n(InflightRequestsScorer)"]
 
     P -->|"Notify(event)  ~ns"| NS
@@ -47,16 +47,16 @@ flowchart TD
     PP -->|reads| MS
 ```
 
-The **producer** (currently `server.go`) fires an `Event` on each request and response —
+The **producer** (currently [`pkg/handlers/server.go`](../../../pkg/handlers/server.go)) fires an `Event` on each request and response —
 a non-blocking channel write (~ns). The `NotificationSource` buffers it. A background
 event loop reads each event from the channel as it arrives and fans it out to all registered
 `Extractor`s. Each extractor switches on `Event.Type` and handles what it understands,
 ignoring the rest.
 
-### Types (`pkg/framework/`)
+### Types (`pkg/framework/interface/`)
 
-Framework-level interfaces and event types live in `package framework` (`pkg/framework/datalayer.go`).
-Model and attribute types live in the `pkg/framework/datalayer` sub-package.
+Framework-level interfaces and event types live in [`pkg/framework/interface/datalayer/datasource/types.go`](../../../pkg/framework/interface/datalayer/datasource/types.go).
+Model and attribute types live in the [`pkg/framework/interface/datalayer/`](../../../pkg/framework/interface/datalayer/) package.
 
 ```go
 type DataSource interface {
@@ -99,28 +99,28 @@ type Extractor interface {
 
 See [Appendix](#appendix) for payload struct definitions and a full extractor example.
 
-### DataStore injection
+### Datastore injection
 
-The `DataStore` is available to extractor factories via `plugin.Handle.Datastore()`.
+The `Datastore` is available to extractor factories via [`plugin.Handle.Datastore()`](../../../pkg/framework/interface/plugin/handle.go).
 This keeps construction consistent with other plugins while the `NotificationSource`
 remains a pure event dispatcher with no knowledge of storage.
 
-The concrete implementation lives in `pkg/datastore`, separate from the
-`framework.DataStore` interface, to make room for future backends (e.g. Redis):
+The concrete implementation lives in [`pkg/datastore/inmemory/`](../../../pkg/datastore/inmemory/), separate from the
+[`datalayer.Datastore`](../../../pkg/framework/interface/datalayer/datastore.go) interface, to make room for future backends (e.g. Redis):
 
 ```go
-ds := datastore.NewStore()
+ds := inmemory.NewDatastore()
 extractor := requestmetadata.NewRequestMetadataExtractor(ds)
 ```
 
-### Registration (`runner.go`)
+### Registration ([`cmd/runner/runner.go`](../../../cmd/runner/runner.go))
 
 ```go
-ds := datastore.NewStore()
+ds := inmemory.NewDatastore()
 src, err := notificationsource.New("default", requestmetadata.NewRequestMetadataExtractor(ds))
 if err != nil { ... }
 if err := src.Start(ctx); err != nil { ... }
-// TODO: pass src to the producer so it can call src.Notify(...)
+
 ```
 
 **Next:** define a configuration story for data layer plugins (NotificationSource, extractors)
@@ -133,14 +133,14 @@ consistent with how model-selector plugins are configured via CLI flags.
 
 ## Implementation Steps
 
-1. Add `DataSource`, `DataStore`, `EventNotifier`, `Event`, `NotificationSource`, `Extractor`, payload types to `pkg/framework/` (`datalayer.go`)
-2. Add `Model`, `AttributeMap` types to `pkg/framework/datalayer/`
-3. Implement `NotificationSource` (buffered channel + event loop) in `pkg/framework/plugins/datalayer/notificationsource/`
-4. Implement `RequestMetadataExtractor` in `pkg/framework/plugins/datalayer/requestmetadata/`
-5. Implement `InflightRequestsScorer` in `pkg/framework/plugins/modelselector/scorer/inflightrequests/`
-6. Wire DataStore + extractor + NotificationSource in `runner.go`
-7. Add `src.Notify(...)` calls to the producer alongside existing pipeline dispatch
-8. Config-driven registration of data layer plugins
+1. ✅ Add `DataSource`, `EventNotifier`, `Event`, `NotificationSource`, `Extractor`, payload types to [`pkg/framework/interface/datalayer/datasource/types.go`](../../../pkg/framework/interface/datalayer/datasource/types.go)
+2. ✅ Add `Model`, `AttributeMap` types to [`pkg/framework/interface/datalayer/`](../../../pkg/framework/interface/datalayer/)
+3. ✅ Implement `NotificationSource` (buffered channel + event loop) in [`pkg/framework/plugins/datalayer/notificationsource/`](../../../pkg/framework/plugins/datalayer/notificationsource/)
+4. ✅ Implement `RequestMetadataExtractor` in [`pkg/framework/plugins/datalayer/requestmetadata/`](../../../pkg/framework/plugins/datalayer/requestmetadata/)
+5. ⏳ Implement `InflightRequestsScorer` in `pkg/framework/plugins/modelselector/scorer/inflightrequests/` (not yet implemented - would read `RequestMetadataAttributeKey` from models)
+6. ✅ Wire Datastore + extractor + NotificationSource in [`cmd/runner/runner.go`](../../../cmd/runner/runner.go) (lines 179-196)
+7. ⏳ Add `src.Notify(...)` calls to the producer ([`pkg/handlers/server.go`](../../../pkg/handlers/server.go)) alongside existing pipeline dispatch (not yet implemented - would fire `RequestEventType` and `ResponseEventType`)
+8. ✅ Config-driven registration of data layer plugins (lines 266-267 in runner.go - factory functions registered)
 
 ---
 
@@ -149,27 +149,27 @@ consistent with how model-selector plugins are configured via CLI flags.
 ### Payload types
 
 ```go
-// package framework (pkg/framework/)
+// package datasource (pkg/framework/interface/datalayer/datasource/)
 
 // RequestPayload is the Payload for RequestEventType.
 // Carries the already-parsed request — no re-parsing needed.
 type RequestPayload struct {
-    Request *InferenceRequest
+    Request *requesthandling.InferenceRequest
 }
 
 // ResponsePayload is the Payload for ResponseEventType.
 // Duration is computed by the producer and passed directly.
 // All response body fields are accessible via Response.Body.
 type ResponsePayload struct {
-    Request  *InferenceRequest
-    Response *InferenceResponse
+    Request  *requesthandling.InferenceRequest
+    Response *requesthandling.InferenceResponse
     Duration time.Duration
 }
 ```
 
 ### Extractor definitions
 
-#### `RequestMetadataExtractor` — owns `"request-metadata"` (`pkg/framework/plugins/datalayer/requestmetadata`)
+#### `RequestMetadataExtractor` — owns `"request-metadata"` ([`pkg/framework/plugins/datalayer/requestmetadata`](../../../pkg/framework/plugins/datalayer/requestmetadata/))
 
 | | |
 |---|---|
