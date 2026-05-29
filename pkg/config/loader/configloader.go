@@ -58,19 +58,26 @@ func LoadConfiguration(configBytes []byte, handle plugin.Handle, logger logr.Log
 		return nil, err
 	}
 
-	notificationSources, err := buildDatalayer(rawConfig.NotificationSources, handle)
+	notificationSources, err := buildNotificationSources(rawConfig.NotificationSources, handle)
 	if err != nil {
 		logger.Error(err, "failed to load one or more notification sources")
+		return nil, err
+	}
+
+	pollingSources, err := buildPollingSources(rawConfig.PollingSources, handle)
+	if err != nil {
+		logger.Error(err, "failed to load one or more polling sources")
 		return nil, err
 	}
 
 	return &config.Config{
 		Profiles:            profiles,
 		NotificationSources: notificationSources,
+		PollingSources:      pollingSources,
 	}, nil
 }
 
-func buildDatalayer(refs []configapi.PluginRef, handle plugin.Handle) ([]datasource.NotificationSource, error) {
+func buildNotificationSources(refs []configapi.PluginRef, handle plugin.Handle) ([]datasource.NotificationSource, error) {
 	sources := make([]datasource.NotificationSource, 0, len(refs))
 	for _, ref := range refs {
 		p := handle.Plugin(ref.PluginRef)
@@ -80,6 +87,22 @@ func buildDatalayer(refs []configapi.PluginRef, handle plugin.Handle) ([]datasou
 		src, ok := p.(datasource.NotificationSource)
 		if !ok {
 			return nil, fmt.Errorf("the plugin named %s is not a NotificationSource", ref.PluginRef)
+		}
+		sources = append(sources, src)
+	}
+	return sources, nil
+}
+
+func buildPollingSources(refs []configapi.PluginRef, handle plugin.Handle) ([]datasource.PollingSource, error) {
+	sources := make([]datasource.PollingSource, 0, len(refs))
+	for _, ref := range refs {
+		p := handle.Plugin(ref.PluginRef)
+		if p == nil {
+			return nil, fmt.Errorf("there is no plugin named %s", ref.PluginRef)
+		}
+		src, ok := p.(datasource.PollingSource)
+		if !ok {
+			return nil, fmt.Errorf("the plugin named %s is not a PollingSource", ref.PluginRef)
 		}
 		sources = append(sources, src)
 	}

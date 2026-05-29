@@ -18,11 +18,16 @@ package pollingsource
 
 import (
 	"context"
+	"encoding/json"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/interface/datalayer"
+	dlsrc "github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/interface/datalayer/datasource"
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/interface/plugin"
+	ctrlbuilder "sigs.k8s.io/controller-runtime/pkg/builder"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // fakeCollector counts how many times Poll has been called.
@@ -40,6 +45,7 @@ func (f *fakeCollector) Poll(_ context.Context) (any, error) {
 	return nil, nil
 }
 
+// TestNew_EmptyName verifies that New returns an error when given an empty name.
 func TestNew_EmptyName(t *testing.T) {
 	_, err := New("")
 	if err == nil {
@@ -47,6 +53,7 @@ func TestNew_EmptyName(t *testing.T) {
 	}
 }
 
+// TestStart_AlreadyStarted verifies that calling Start on an already-running PollingSource returns an error.
 func TestStart_AlreadyStarted(t *testing.T) {
 	src, err := New("test")
 	if err != nil {
@@ -63,6 +70,7 @@ func TestStart_AlreadyStarted(t *testing.T) {
 	}
 }
 
+// TestCollectorPolled verifies that a registered collector is invoked multiple times after Start.
 func TestCollectorPolled(t *testing.T) {
 	src, _ := New("test")
 	c := &fakeCollector{name: "c1"}
@@ -79,6 +87,148 @@ func TestCollectorPolled(t *testing.T) {
 	}
 }
 
+// fakeHandle implements plugin.Handle for unit tests.
+type fakeHandle struct {
+	plugins map[string]plugin.Plugin
+}
+
+func newFakeHandle(plugins map[string]plugin.Plugin) *fakeHandle {
+	if plugins == nil {
+		plugins = map[string]plugin.Plugin{}
+	}
+	return &fakeHandle{plugins: plugins}
+}
+
+func (f *fakeHandle) Context() context.Context                         { return context.Background() }
+func (f *fakeHandle) Client() client.Client                            { return nil }
+func (f *fakeHandle) ReconcilerBuilder() *ctrlbuilder.Builder          { return nil }
+func (f *fakeHandle) Datastore() datalayer.Datastore                   { return nil }
+func (f *fakeHandle) Plugin(name string) plugin.Plugin                 { return f.plugins[name] }
+func (f *fakeHandle) AddPlugin(name string, p plugin.Plugin)           { f.plugins[name] = p }
+func (f *fakeHandle) GetAllPlugins() []plugin.Plugin                   { return nil }
+func (f *fakeHandle) GetAllPluginsWithNames() map[string]plugin.Plugin { return f.plugins }
+
+// notACollector satisfies plugin.Plugin but not dlsrc.Collector.
+type notACollector struct{}
+
+func (n *notACollector) TypedName() plugin.TypedName {
+	return plugin.TypedName{Type: "not-a-collector", Name: "not-a-collector"}
+}
+
+// Factory with nil parameters creates a PollingSource with no collectors registered.
+func TestFactoryNoParameters(t *testing.T) {
+	h := newFakeHandle(nil)
+	p, err := Factory("src", nil, h)
+	if err != nil {
+		t.Fatalf("Factory returned unexpected error: %v", err)
+	}
+	src, ok := p.(*PollingSource)
+	if !ok {
+		t.Fatalf("expected *PollingSource, got %T", p)
+	}
+	if len(src.collectors) != 0 {
+		t.Errorf("expected 0 collectors, got %d", len(src.collectors))
+	}
+}
+
+// Factory with an empty JSON object creates a PollingSource with no collectors registered.
+func TestFactoryEmptyParameters(t *testing.T) {
+	h := newFakeHandle(nil)
+	p, err := Factory("src", json.RawMessage(`{}`), h)
+	if err != nil {
+		t.Fatalf("Factory returned unexpected error: %v", err)
+	}
+	src := p.(*PollingSource)
+	if len(src.collectors) != 0 {
+		t.Errorf("expected 0 collectors, got %d", len(src.collectors))
+	}
+}
+
+// Factory resolves pluginRefs to Collector instances and registers them in order with their configured frequencies.
+func TestFactoryWithCollectors(t *testing.T) {
+	c1 := &fakeCollector{name: "col-a"}
+	c2 := &fakeCollector{name: "col-b"}
+	h := newFakeHandle(map[string]plugin.Plugin{
+		"col-a": c1,
+		"col-b": c2,
+	})
+
+	params := json.RawMessage(`{"collectors":[{"pluginRef":"col-a","frequency":1},{"pluginRef":"col-b","frequency":2}]}`)
+	p, err := Factory("src", params, h)
+	if err != nil {
+		t.Fatalf("Factory returned unexpected error: %v", err)
+	}
+	src := p.(*PollingSource)
+	if len(src.collectors) != 2 {
+		t.Fatalf("expected 2 collectors, got %d", len(src.collectors))
+	}
+	if src.collectors[0].collector != dlsrc.Collector(c1) {
+		t.Errorf("expected collectors[0] to be c1")
+	}
+	if src.collectors[1].collector != dlsrc.Collector(c2) {
+		t.Errorf("expected collectors[1] to be c2")
+	}
+	if src.collectors[0].frequency != 1*time.Second {
+		t.Errorf("expected collectors[0] frequency 1s, got %v", src.collectors[0].frequency)
+	}
+	if src.collectors[1].frequency != 2*time.Second {
+		t.Errorf("expected collectors[1] frequency 2s, got %v", src.collectors[1].frequency)
+	}
+}
+
+// Factory returns an error when the parameters JSON is malformed.
+func TestFactoryInvalidJSON(t *testing.T) {
+	h := newFakeHandle(nil)
+	_, err := Factory("src", json.RawMessage(`{invalid`), h)
+	if err == nil {
+		t.Fatal("expected error for invalid JSON, got nil")
+	}
+}
+
+// Factory returns an error when a pluginRef names a plugin not registered in the handle.
+func TestFactoryUnknownCollectorRef(t *testing.T) {
+	h := newFakeHandle(nil)
+	params := json.RawMessage(`{"collectors":[{"pluginRef":"does-not-exist","frequency":1}]}`)
+	_, err := Factory("src", params, h)
+	if err == nil {
+		t.Fatal("expected error for unknown collector ref, got nil")
+	}
+}
+
+// Factory returns an error when a referenced plugin does not implement the Collector interface.
+func TestFactoryPluginNotCollector(t *testing.T) {
+	h := newFakeHandle(map[string]plugin.Plugin{
+		"wrong-type": &notACollector{},
+	})
+	params := json.RawMessage(`{"collectors":[{"pluginRef":"wrong-type","frequency":1}]}`)
+	_, err := Factory("src", params, h)
+	if err == nil {
+		t.Fatal("expected error when plugin does not implement Collector, got nil")
+	}
+}
+
+// TestRegisterCollectorAfterStart verifies that a collector registered after Start is still polled.
+func TestRegisterCollectorAfterStart(t *testing.T) {
+	src, _ := New("test")
+	pre := &fakeCollector{name: "pre"}
+	src.RegisterCollector(pre, 10*time.Millisecond)
+
+	if err := src.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	post := &fakeCollector{name: "post"}
+	src.RegisterCollector(post, 10*time.Millisecond)
+
+	time.Sleep(50 * time.Millisecond)
+	src.Stop()
+
+	if got := post.pollCount.Load(); got < 1 {
+		t.Errorf("expected post-start collector to be polled at least once, got %d", got)
+	}
+}
+
+// TestMultipleCollectors_DifferentFrequencies verifies that a higher-frequency collector is polled more times than a lower-frequency one.
 func TestMultipleCollectors_DifferentFrequencies(t *testing.T) {
 	src, _ := New("test")
 	fast := &fakeCollector{name: "fast"}

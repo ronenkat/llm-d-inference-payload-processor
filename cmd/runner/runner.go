@@ -80,6 +80,7 @@ type Runner struct {
 
 	customCollectors    []prometheus.Collector
 	notificationSources []datasource.NotificationSource
+	pollingSources      []datasource.PollingSource
 }
 
 // WithExecutableName sets the name of the executable containing the runner.
@@ -192,8 +193,17 @@ func (r *Runner) Run(ctx context.Context) error {
 			return err
 		}
 	}
+	for _, src := range r.pollingSources {
+		if err := src.Start(ctx); err != nil {
+			setupLog.Error(err, "failed to start polling source", "name", src.TypedName().Name)
+			return err
+		}
+	}
 	defer func() {
 		for _, src := range r.notificationSources {
+			src.Stop()
+		}
+		for _, src := range r.pollingSources {
 			src.Stop()
 		}
 	}()
@@ -261,6 +271,7 @@ func (r *Runner) loadConfiguration(ctx context.Context, opts *runserver.Options,
 	r.requestPlugins = theConfig.Profiles[profileName].RequestPlugins
 	r.responsePlugins = theConfig.Profiles[profileName].ResponsePlugins
 	r.notificationSources = theConfig.NotificationSources
+	r.pollingSources = theConfig.PollingSources
 
 	return nil
 }

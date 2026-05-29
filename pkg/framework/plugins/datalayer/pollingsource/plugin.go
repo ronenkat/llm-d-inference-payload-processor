@@ -22,16 +22,27 @@ import (
 	"errors"
 	"fmt"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
+	v1alpha1 "github.com/llm-d/llm-d-inference-payload-processor/apix/config/v1alpha1"
 	dlsrc "github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/interface/datalayer/datasource"
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/interface/plugin"
 )
 
 const PluginType = "polling-source"
+
+// PollingSourceConfig is the JSON configuration structure for the PollingSource plugin.
+type PollingSourceConfig struct {
+	Collectors []CollectorConfig `json:"collectors"`
+}
+
+// CollectorConfig references a collector plugin and the polling interval in whole seconds.
+type CollectorConfig struct {
+	v1alpha1.PluginRef
+	Frequency int64 `json:"frequency"` // seconds
+}
 
 // compile-time interface assertion
 var _ dlsrc.PollingSource = &PollingSource{}
@@ -46,18 +57,44 @@ type PollingSource struct {
 	collectors []collectorEntry
 	mu         sync.Mutex
 
-	started atomic.Bool
+	started bool
+	stopped bool
+	ctx     context.Context
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
 }
 
 // Factory is the factory function for PollingSource.
-// TODO: configuration to list collectors to enable.
-func Factory(name string, _ json.RawMessage, _ plugin.Handle) (plugin.Plugin, error) {
+func Factory(name string, rawParameters json.RawMessage, handle plugin.Handle) (plugin.Plugin, error) {
+	var config PollingSourceConfig
+	if len(rawParameters) > 0 {
+		if err := json.Unmarshal(rawParameters, &config); err != nil {
+			return nil, fmt.Errorf("failed to parse the parameters of the '%s' plugin - %w", PluginType, err)
+		}
+	}
+
+	collectors := make([]dlsrc.Collector, 0, len(config.Collectors))
+	for _, cc := range config.Collectors {
+		p := handle.Plugin(cc.PluginRef.PluginRef)
+		if p == nil {
+			return nil, fmt.Errorf("'%s' plugin: collector plugin %q not found", PluginType, cc.PluginRef.PluginRef)
+		}
+		c, ok := p.(dlsrc.Collector)
+		if !ok {
+			return nil, fmt.Errorf("'%s' plugin: plugin %q does not implement Collector", PluginType, cc.PluginRef.PluginRef)
+		}
+		collectors = append(collectors, c)
+	}
+
 	src, err := New(name)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create '%s' plugin - %w", PluginType, err)
 	}
+
+	for i, cc := range config.Collectors {
+		src.RegisterCollector(collectors[i], time.Duration(cc.Frequency)*time.Second)
+	}
+
 	return src, nil
 }
 
@@ -74,21 +111,27 @@ func New(name string) (dlsrc.PollingSource, error) {
 func (p *PollingSource) TypedName() plugin.TypedName { return p.name }
 
 // RegisterCollector adds a Collector to be polled at the given frequency.
-// Safe to call before Start.
+// Safe to call before or after Start. No-op for the goroutine if called after Stop.
 func (p *PollingSource) RegisterCollector(c dlsrc.Collector, frequency time.Duration) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	p.collectors = append(p.collectors, collectorEntry{collector: c, frequency: frequency})
+	if p.started && !p.stopped {
+		p.wg.Add(1)
+		go p.runCollector(p.ctx, c, frequency)
+	}
+	p.mu.Unlock()
 }
 
 // Start launches one polling goroutine per registered Collector. Returns an error if called more than once.
 func (p *PollingSource) Start(ctx context.Context) error {
-	if !p.started.CompareAndSwap(false, true) {
+	p.mu.Lock()
+	if p.started {
+		p.mu.Unlock()
 		return errors.New("PollingSource already started")
 	}
 	ctx, p.cancel = context.WithCancel(ctx)
-
-	p.mu.Lock()
+	p.ctx = ctx
+	p.started = true
 	snapshot := make([]collectorEntry, len(p.collectors))
 	copy(snapshot, p.collectors)
 	p.mu.Unlock()
@@ -102,8 +145,13 @@ func (p *PollingSource) Start(ctx context.Context) error {
 
 // Stop cancels all polling goroutines and waits for them to exit.
 func (p *PollingSource) Stop() {
-	if p.cancel != nil {
-		p.cancel()
+	p.mu.Lock()
+	p.stopped = true
+	cancel := p.cancel
+	p.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
 		p.wg.Wait()
 	}
 }
