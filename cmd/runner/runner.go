@@ -22,15 +22,14 @@ import (
 	"net/http"
 	"os"
 
+	"github.com/go-logr/logr"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/spf13/pflag"
 	"google.golang.org/grpc"
 	healthPb "google.golang.org/grpc/health/grpc_health_v1"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -42,11 +41,12 @@ import (
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/config/loader"
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/datastore/inmemory"
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/interface/datalayer"
+	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/interface/datalayer/datasource"
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/interface/plugin"
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/interface/requesthandling"
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/plugins/datalayer/modelconfigcollector"
 	notificationsource "github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/plugins/datalayer/notificationsource"
-	requestmetadata "github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/plugins/datalayer/requestmetadata"
+	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/plugins/datalayer/requestmetadata"
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/plugins/modelselector/picker/maxscore"
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/plugins/modelselector/picker/random"
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/plugins/modelselector/picker/weightedrandom"
@@ -56,8 +56,6 @@ import (
 	runserver "github.com/llm-d/llm-d-inference-payload-processor/pkg/server"
 	"github.com/llm-d/llm-d-inference-payload-processor/version"
 )
-
-const modelField = "model"
 
 var setupLog = ctrl.Log.WithName("setup")
 
@@ -80,7 +78,8 @@ type Runner struct {
 	// in the same order the plugin flags are provided.
 	responsePlugins []requesthandling.ResponseProcessor
 
-	customCollectors []prometheus.Collector
+	customCollectors    []prometheus.Collector
+	notificationSources []datasource.NotificationSource
 }
 
 // WithExecutableName sets the name of the executable containing the runner.
@@ -182,67 +181,22 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	ds := inmemory.NewDatastore()
 
-	err = r.loadConfiguration(ctx, opts, mgr, ds)
+	err = r.loadConfiguration(ctx, opts, mgr, ds, setupLog)
 	if err != nil {
 		return err
 	}
 
-	// Construct plugin instances for the in-tree plugins that are (1) registered and (2) requested via the --plugin flags
-	if len(opts.PluginSpecs) == 0 {
-		setupLog.Info("no plugins are specified. Running with the default plugins")
-
-		modelToHeaderPlugin, err := bodyfieldtoheader.NewBodyFieldToHeaderPlugin(modelField, bodyfieldtoheader.ModelHeader)
-		if err != nil {
-			setupLog.Error(err, "failed to create plugin", "pluginType", bodyfieldtoheader.BodyFieldToHeaderPluginType)
+	for _, src := range r.notificationSources {
+		if err := src.Start(ctx); err != nil {
+			setupLog.Error(err, "failed to start notification source", "name", src.TypedName().Name)
 			return err
 		}
-		r.requestPlugins = append(r.requestPlugins, modelToHeaderPlugin)
-
-		// Create BaseModelToHeaderPlugin instance for extracting the "model" field into X-Gateway-Base-Model-Name
-		baseModelToHeaderPlugin, err := basemodelextractor.NewBaseModelToHeaderPlugin(func() *builder.Builder {
-			return ctrl.NewControllerManagedBy(mgr)
-		}, mgr.GetClient())
-		if err != nil {
-			setupLog.Error(err, "failed to create plugin", "pluginType", basemodelextractor.BaseModelToHeaderPluginType)
-			return err
+	}
+	defer func() {
+		for _, src := range r.notificationSources {
+			src.Stop()
 		}
-
-		r.requestPlugins = append(r.requestPlugins, baseModelToHeaderPlugin)
-	} else {
-		setupLog.Info("plugins are specified, running with the specified plugins.")
-		handle := plugin.NewHandle(ctx, mgr, ds)
-		for _, s := range opts.PluginSpecs {
-			factory, ok := plugin.Registry[s.Type]
-			if !ok {
-				err := fmt.Errorf("unknown plugin type %q (no factory registered)", s.Type)
-				setupLog.Error(err, "Failed to find plugin factory", "pluginType", s.Type)
-				return err
-			}
-			instance, err := factory(s.Name, s.JSON, handle)
-			if err != nil {
-				setupLog.Error(err, fmt.Sprintf("invalid %s#%s: %v\n", s.Type, s.Name, err))
-				return err
-			}
-			if requestProcessor, ok := instance.(requesthandling.RequestProcessor); ok {
-				r.requestPlugins = append(r.requestPlugins, requestProcessor)
-			}
-			if responseProcessor, ok := instance.(requesthandling.ResponseProcessor); ok {
-				r.responsePlugins = append(r.responsePlugins, responseProcessor)
-			}
-		}
-	}
-
-	// Wire the request-metadata data pipeline: extractor → notification source.
-	// TODO: config-driven path does not yet support NotificationSource + extractors.
-	notifSrc, err := notificationsource.New("default", requestmetadata.NewRequestMetadataExtractor(ds))
-	if err != nil {
-		setupLog.Error(err, "failed to create notification source")
-		return err
-	}
-	if err := notifSrc.Start(ctx); err != nil {
-		setupLog.Error(err, "failed to start notification source")
-		return err
-	}
+	}()
 
 	// Setup ExtProc Server Runner.
 	serverRunner := &runserver.ExtProcServerRunner{
@@ -273,10 +227,8 @@ func (r *Runner) Run(ctx context.Context) error {
 	return nil
 }
 
-func (r *Runner) loadConfiguration(ctx context.Context, opts *runserver.Options, mgr manager.Manager, ds datalayer.Datastore) error {
+func (r *Runner) loadConfiguration(ctx context.Context, opts *runserver.Options, mgr manager.Manager, ds datalayer.Datastore, logger logr.Logger) error {
 	handle := plugin.NewHandle(ctx, mgr, ds)
-
-	logger := log.FromContext(ctx)
 
 	var configBytes []byte
 	if opts.ConfigText != "" {
@@ -285,6 +237,7 @@ func (r *Runner) loadConfiguration(ctx context.Context, opts *runserver.Options,
 		var err error
 		configBytes, err = os.ReadFile(opts.ConfigFile)
 		if err != nil {
+			logger.Error(err, "failed to load config from a file", "file", opts.ConfigFile)
 			return fmt.Errorf("failed to load config from a file '%s' - %w", opts.ConfigFile, err)
 		}
 	}
@@ -292,13 +245,24 @@ func (r *Runner) loadConfiguration(ctx context.Context, opts *runserver.Options,
 	// Register factories for all known in-tree plugins
 	r.registerInTreePlugins()
 
-	_, err := loader.LoadConfiguration(configBytes, handle, logger)
-	// if err == nil {
-	//     r.requestPlugins = theConfig.RequestPlugins
-	//	   r.responsePlugins = theConfig.ResponsePlugins
-	// }
+	theConfig, err := loader.LoadConfiguration(configBytes, handle, logger)
+	if err != nil {
+		return err
+	}
 
-	return err
+	// Hack for now until the ProfilePicker is supported
+	var profileName = ""
+	for name := range theConfig.Profiles {
+		profileName = name
+		break
+	}
+	logger.Info("Running with", "profile", profileName)
+
+	r.requestPlugins = theConfig.Profiles[profileName].RequestPlugins
+	r.responsePlugins = theConfig.Profiles[profileName].ResponsePlugins
+	r.notificationSources = theConfig.NotificationSources
+
+	return nil
 }
 
 // registerInTreePlugins registers the factory functions of all known payload processor plugins

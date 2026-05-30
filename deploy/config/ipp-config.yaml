@@ -7,3 +7,8 @@ plugins:
   parameters:
     fieldName: model
     headerName: X-Gateway-Model-Name
+profiles:
+- name: default
+  plugins:
+    request:
+    - pluginRef: body-field-to-header
