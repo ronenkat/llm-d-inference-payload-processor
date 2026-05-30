@@ -22,6 +22,8 @@ import (
 	"errors"
 	"os"
 
+	"sigs.k8s.io/controller-runtime/pkg/log"
+
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/interface/datalayer"
 	dlsrc "github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/interface/datalayer/datasource"
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/interface/plugin"
@@ -82,8 +84,11 @@ func NewModelConfigCollector(name, modelsPath string, ds datalayer.Datastore) *M
 
 func (c *ModelConfigCollector) TypedName() plugin.TypedName { return c.typedName }
 
-// Poll reads the config file and registers every listed model in the datastore.
-func (c *ModelConfigCollector) Poll(_ context.Context) (any, error) {
+// Poll reads the config file, registers every valid listed model in the datastore,
+// and removes any datastore model that no longer appears in the file.
+func (c *ModelConfigCollector) Poll(ctx context.Context) (any, error) {
+	logger := log.FromContext(ctx).WithName("model-config-collector")
+
 	data, err := os.ReadFile(c.modelsPath)
 	if err != nil {
 		return nil, err
@@ -94,8 +99,22 @@ func (c *ModelConfigCollector) Poll(_ context.Context) (any, error) {
 		return nil, err
 	}
 
+	desired := make(map[string]struct{}, len(cfg.Models))
 	for _, m := range cfg.Models {
+		if m.Name == "" {
+			logger.Info("skipping model entry with empty name")
+			continue
+		}
+		desired[m.Name] = struct{}{}
 		c.ds.GetOrCreateModel(m.Name)
 	}
+
+	for _, existing := range c.ds.Models() {
+		if _, ok := desired[existing]; !ok {
+			logger.Info("removing model no longer present in config", "model", existing)
+			c.ds.DeleteModel(existing)
+		}
+	}
+
 	return nil, nil
 }

@@ -172,3 +172,61 @@ func TestPoll_WrongSchema(t *testing.T) {
 		t.Error("expected error for wrong-schema file content, got nil")
 	}
 }
+
+// TestPoll_SkipsEmptyName verifies that entries with an empty name are silently skipped.
+func TestPoll_SkipsEmptyName(t *testing.T) {
+	ds := datastore.NewFakeDataStore()
+	path := writeTempModelsConfig(t, ModelsConfig{
+		Models: []ModelConfiguration{{Name: ""}, {Name: "valid-model"}},
+	})
+	c := useFactory(t, path, ds)
+
+	if _, err := c.Poll(context.Background()); err != nil {
+		t.Fatalf("Poll failed: %v", err)
+	}
+
+	models := ds.Models()
+	if len(models) != 1 || models[0] != "valid-model" {
+		t.Errorf("expected only [valid-model], got %v", models)
+	}
+}
+
+// TestPoll_RemovesStaleModels verifies that models absent from the config file are deleted.
+func TestPoll_RemovesStaleModels(t *testing.T) {
+	ds := datastore.NewFakeDataStore()
+
+	// Seed a model that will not appear in the config.
+	ds.GetOrCreateModel("stale-model")
+
+	path := writeTempModelsConfig(t, ModelsConfig{
+		Models: []ModelConfiguration{{Name: "current-model"}},
+	})
+	c := useFactory(t, path, ds)
+
+	if _, err := c.Poll(context.Background()); err != nil {
+		t.Fatalf("Poll failed: %v", err)
+	}
+
+	models := ds.Models()
+	if len(models) != 1 || models[0] != "current-model" {
+		t.Errorf("expected only [current-model], got %v", models)
+	}
+}
+
+// TestPoll_EmptyModelsListClearsStore verifies that an empty models array removes all existing entries.
+func TestPoll_EmptyModelsListClearsStore(t *testing.T) {
+	ds := datastore.NewFakeDataStore()
+	ds.GetOrCreateModel("m1")
+	ds.GetOrCreateModel("m2")
+
+	path := writeTempModelsConfig(t, ModelsConfig{Models: []ModelConfiguration{}})
+	c := useFactory(t, path, ds)
+
+	if _, err := c.Poll(context.Background()); err != nil {
+		t.Fatalf("Poll failed: %v", err)
+	}
+
+	if models := ds.Models(); len(models) != 0 {
+		t.Errorf("expected empty store, got %v", models)
+	}
+}
