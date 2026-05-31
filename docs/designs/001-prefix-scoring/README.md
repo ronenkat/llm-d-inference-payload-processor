@@ -2,7 +2,14 @@
 
 ## Summary
 
-The Prefix Hash-Index-Score system enables intelligent request routing to models that have previously processed similar request prefixes, thereby improving Time-To-First-Token (TTFT) by leveraging prefix caching capabilities in modern LLM inference engines. A prefix-aware scorer operates in three phases within the Inference Payload Processor (IPP): a pre-processing plugin computes prefix hashes and queries an indexer to identify models with matching cached prefixes; a scoring plugin assigns higher scores to models with longer prefix matched; and a response extraction plugin updates the indexer with information about which models have processed which prefixes.
+The Prefix Hash-Index-Score system enables intelligent request routing to models that have previously processed similar request prefixes, thereby improving Time-To-First-Token (TTFT) by leveraging prefix caching capabilities in modern LLM inference engines. A prefix-aware scorer operates in three phases within the Inference Payload Processor (IPP): a request processor plugin computes prefix hashes and queries an indexer to identify models with matching cached prefixes; a scoring plugin assigns higher scores to models with longer prefix matched; and a response extraction plugin updates the indexer with information about which models have processed which prefixes.
+
+The goal is to capture and route:
+1. Repeated calls in multi-turn conversation agnostic to the application.
+2. Spin-off of a subagent based on a prefix.
+3. Similar agent patterns across different users.
+
+Note: goal is not to find optimal 
 
 ## Proposed Architecture
 
@@ -32,6 +39,7 @@ The Prefix Hash-Index-Score system consists of three main components that operat
    - **Responsibilities**:
      - Processes `ResponseEventType` events to track completed requests
      - Updates the prefix indexer with information about which model processed which prefix hashes
+       - TODO: move logic into post-processing of the request processor to update the index at the earliest possible time.
      - Maintains the indexer's knowledge of prefix-to-model mappings over time, leveraging LRU and TTL eviction policies.
 
 ### Request Body Hashing and Indexing
@@ -127,34 +135,10 @@ The store is created with `prefixIndexer: nil` and initialized lazily when the P
 
 All three components access the indexer through `datastore.Store.GetPrefixIndexer()`, with nil checks to gracefully handle cases where the indexer is not yet initialized. 
 
-## Open Questions
+***Future enhancements:**
 
-### 1. Pre-processing Plugin Access to Datastore
-
-**Requirement**: The pre-processing plugin needs access to the datastore instance to query the prefix indexer.
-
-**Approach 1**: The plugin factory uses the global `datastore.Store` variable directly. While this works, it couples the plugin to global state and makes testing more difficult.
-
-**Approach 2**: Extend the `framework.Handle` interface to provide datastore access:
-```go
-type Handle interface {
-    Context() context.Context
-    Datastore() datastore.Datastore  // New method
-}
-```
-
-This would provide explicit dependency injection, easier testing, and eliminate global state coupling. However, it requires framework changes that affect all plugin factories.
-
-### 2. Cycle State for Hash and Model Information
-
-**Question**: Should the computed hashes and model match information be stored in cycle state? If not, how should the pre-processing plugin pass this information to the scorer?
-
-**Suggested Implementation**: The PrefixHashing plugin stores a `RequestHashingState` in the `CycleState` containing:
-- `PrefixHashes []BlockHash`: The computed prefix hashes
-- `PrefixCacheModels map[ModelID]int`: Models and their longest prefix match length
-
-The RequestPrefixScorer retrieves this state from CycleState to calculate scores.
-
-**Considerations**:
-- **Pros**: CycleState is designed for passing data between pipeline stages; thread-safe; scoped to request lifecycle
-- **Alternatives**: Direct indexer queries in scorer (slower, redundant computation), shared cache (complex lifecycle management)
+Reduction of hash storage by:
+1. tracking prompt length distribution, leveraging sliding window approach to adapt for changing patterns.
+2. Adaptive store of hashes based on prompt length distribution.
+   - Hybrid Dense Core Approach - use dense hashes for short prompt store, medium and sparse hashes for longer tail prompts.
+   - Length boundaries adapt by sliding window lengths distribution
