@@ -109,22 +109,14 @@ The concrete implementation lives in [`pkg/datastore/inmemory/`](../../../pkg/da
 [`datalayer.Datastore`](../../../pkg/framework/interface/datalayer/datastore.go) interface, to make room for future backends (e.g. Redis):
 
 ```go
-ds := inmemory.NewDatastore()
-extractor := requestmetadata.NewRequestMetadataExtractor(ds)
+func ExtractorFactory(name string, _ json.RawMessage, h plugin.Handle) (plugin.Plugin, error) {
+    return requestmetadata.NewRequestMetadataExtractor(h.Datastore()).WithName(name), nil
+}
 ```
 
 ### Registration ([`cmd/runner/runner.go`](../../../cmd/runner/runner.go))
 
-```go
-ds := inmemory.NewDatastore()
-src, err := notificationsource.New("default", requestmetadata.NewRequestMetadataExtractor(ds))
-if err != nil { ... }
-if err := src.Start(ctx); err != nil { ... }
-
-```
-
-**Next:** define a configuration story for data layer plugins (NotificationSource, extractors)
-consistent with how model-selector plugins are configured via CLI flags.
+The runner creates the datastore (default to inmemory datastore) and starts all the `notificationSources` that are configured in the configuration.
 
 ## Future
 
@@ -138,7 +130,7 @@ consistent with how model-selector plugins are configured via CLI flags.
 3. ✅ Implement `NotificationSource` (buffered channel + event loop) in [`pkg/framework/plugins/datalayer/notificationsource/`](../../../pkg/framework/plugins/datalayer/notificationsource/)
 4. ✅ Implement `RequestMetadataExtractor` in [`pkg/framework/plugins/datalayer/requestmetadata/`](../../../pkg/framework/plugins/datalayer/requestmetadata/)
 5. ⏳ Implement `InflightRequestsScorer` in `pkg/framework/plugins/modelselector/scorer/inflightrequests/` (not yet implemented - would read `RequestMetadataAttributeKey` from models)
-6. ✅ Wire Datastore + extractor + NotificationSource in [`cmd/runner/runner.go`](../../../cmd/runner/runner.go) (lines 179-196)
+6. ✅ Wire Datastore + extractor + NotificationSource via config-driven registration (see [PR #128](https://github.com/llm-d/llm-d-inference-payload-processor/pull/128))
 7. ⏳ Add `src.Notify(...)` calls to the producer ([`pkg/handlers/server.go`](../../../pkg/handlers/server.go)) alongside existing pipeline dispatch (not yet implemented - would fire `RequestEventType` and `ResponseEventType`)
 8. ✅ Config-driven registration of data layer plugins (lines 266-267 in runner.go - factory functions registered)
 
